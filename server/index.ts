@@ -344,6 +344,16 @@ function broadcast(frame: unknown) {
   }
 }
 
+const distDir = join(here, '..', 'dist')
+app.use(express.static(distDir))
+app.use((req, res, next) => {
+  if (req.path === '/api' || req.path.startsWith('/api/')) {
+    next()
+    return
+  }
+  res.sendFile(join(distDir, 'index.html'))
+})
+
 const port = Number(process.env.PORT ?? 3000)
 const host = process.env.HOST ?? '0.0.0.0'
 server.listen(port, host, () => {
