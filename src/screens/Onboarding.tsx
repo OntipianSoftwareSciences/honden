@@ -3,6 +3,7 @@ import HeartMark from '../components/HeartMark'
 
 type Props = {
   onDone: (username: string, notice?: string) => void | Promise<void>
+  invite?: boolean
 }
 
 const primaryButton =
@@ -24,8 +25,10 @@ function cleanName(value: string) {
   return value.replace(/^@/, '').toLowerCase()
 }
 
-export default function Onboarding({ onDone }: Props) {
-  const [view, setView] = useState<'login' | 'signup' | 'recovery' | 'reset'>('login')
+export default function Onboarding({ onDone, invite = false }: Props) {
+  const [view, setView] = useState<'invite' | 'login' | 'signup' | 'recovery' | 'reset'>(
+    invite ? 'invite' : 'login',
+  )
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -37,6 +40,7 @@ export default function Onboarding({ onDone }: Props) {
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const backView = invite ? 'invite' : 'login'
 
   async function login() {
     const name = cleanName(username.trim())
@@ -153,6 +157,37 @@ export default function Onboarding({ onDone }: Props) {
     )
   }
 
+  if (view === 'invite') {
+    return shell(
+      <>
+        <h1 className="mb-2 text-2xl font-bold">Welcome to HonDen — you've been invited</h1>
+        <p className="mb-8 text-base leading-relaxed">
+          A sweet, safe den to talk in. Log in or get started to join the conversation.
+        </p>
+        <button
+          type="button"
+          className={primaryButton}
+          onClick={() => {
+            setError('')
+            setView('login')
+          }}
+        >
+          Log in
+        </button>
+        <button
+          type="button"
+          className={`mt-3 ${secondaryButton}`}
+          onClick={() => {
+            setError('')
+            setView('signup')
+          }}
+        >
+          Get started
+        </button>
+      </>,
+    )
+  }
+
   if (view === 'recovery') {
     return shell(
       <>
@@ -238,7 +273,7 @@ export default function Onboarding({ onDone }: Props) {
           className={`mt-3 ${secondaryButton}`}
           onClick={() => {
             setError('')
-            setView('login')
+            setView(backView)
           }}
         >
           Back
@@ -298,7 +333,7 @@ export default function Onboarding({ onDone }: Props) {
           className={`mt-3 ${secondaryButton}`}
           onClick={() => {
             setError('')
-            setView('login')
+            setView(backView)
           }}
         >
           Back
@@ -364,6 +399,18 @@ export default function Onboarding({ onDone }: Props) {
       >
         Get started
       </button>
+      {invite && (
+        <button
+          type="button"
+          className="mt-3 text-sm font-bold text-deep-rose underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+          onClick={() => {
+            setError('')
+            setView('invite')
+          }}
+        >
+          Back
+        </button>
+      )}
     </>,
   )
 }

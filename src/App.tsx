@@ -698,10 +698,20 @@ export default function App() {
     if (activeThreadId === contactId) setScreen('chats')
   }
 
-  let     screenView = <Onboarding onDone={(name, loginNotice) => void finishLogin(name, loginNotice)} />
+  let screenView = <Onboarding onDone={(name, loginNotice) => void finishLogin(name, loginNotice)} />
 
   if (screen === 'invite') {
-    screenView = <Onboarding onDone={acceptInvite} />
+    screenView = (
+      <Onboarding
+        invite
+        onDone={(name, loginNotice) => {
+          void (async () => {
+            await finishLogin(name, loginNotice)
+            acceptInvite()
+          })()
+        }}
+      />
+    )
   } else if (screen === 'addUser') {
     screenView = <AddUser onAdd={addByUsername} onBack={() => setScreen('chats')} />
   } else if (screen === 'settings') {

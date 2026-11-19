@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { joinUrl } from '../net/invite'
 import { normalizeUsername } from '../store/messages'
 
 type Props = {
@@ -25,9 +26,7 @@ export default function AddUser({ onAdd, onBack }: Props) {
 
   function createInviteLink() {
     const token = Math.random().toString(36).slice(2, 8)
-    setLink(
-      `${window.location.protocol}//${window.location.hostname}:${window.location.port || '5173'}/join/honey-${token}`,
-    )
+    setLink(joinUrl(`honey-${token}`))
   }
 
   function copyLink() {

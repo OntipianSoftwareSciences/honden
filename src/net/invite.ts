@@ -102,11 +102,14 @@ export function rotateInvite(): Invite {
 }
 
 export function inviteUrl(invite: Invite): string {
-  const url = new URL(window.location.href)
-  url.search = ''
+  const url = new URL('/', window.location.origin)
   url.searchParams.set('room', invite.room)
   url.hash = `key=${invite.key}`
   return url.toString()
+}
+
+export function joinUrl(code: string): string {
+  return `${window.location.origin}/join/${code}`
 }
 
 export function relayUrl(invite: Invite, configured: string): string {
