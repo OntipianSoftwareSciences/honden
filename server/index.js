@@ -257,6 +257,7 @@ app.get('/api/messages', (req, res) => {
 });
 app.post('/api/messages', (req, res) => {
     const body = req.body;
+    console.log(`POST /api/messages, chatId=${typeof body?.chatId === 'string' ? body.chatId : ''}, text=${typeof body?.text === 'string' ? body.text : ''}`);
     if (!body ||
         typeof body.chatId !== 'string' ||
         typeof body.sender !== 'string' ||
@@ -274,6 +275,7 @@ app.post('/api/messages', (req, res) => {
     };
     messages.push(message);
     persist();
+    console.log(`Saved ${messages.length} messages`);
     broadcast({ type: 'message', message });
     res.status(201).json(message);
 });

@@ -188,6 +188,11 @@ export function saveOutbox(items: OutboxMessage[]): void {
 }
 
 export function upsertOutbox(item: OutboxMessage): void {
+  console.log('sendMessage() queued in store/messages.ts', {
+    text: item.plain,
+    chatId: item.threadId,
+    user: item.sender,
+  })
   const items = loadOutbox()
   const index = items.findIndex((entry) => entry.id === item.id)
   if (index >= 0) items[index] = item

@@ -32,8 +32,10 @@ export default function Chat({
   }, [messages.length])
 
   function send() {
+    console.log('Send tapped', { threadId, draft })
     const text = draft.trim()
     if (!text) return
+    console.log('sendMessage() called', { text, chatId: threadId, user: name })
     void onSend(threadId, text)
     setDraft('')
   }

@@ -530,6 +530,11 @@ export default function App() {
       upsertOutbox(item)
     }
     try {
+      console.log('POST /api/messages', {
+        chatId: item.threadId,
+        text: item.text,
+        sender: item.sender,
+      })
       const response = await fetch('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -541,7 +546,9 @@ export default function App() {
           time: item.time,
         }),
       })
+      console.log('POST /api/messages response status', response.status)
       if (!response.ok) {
+        console.error('POST /api/messages failed', response.status)
         updateOutboxStatus(item.id, 'failed')
         setMessages((current) =>
           current.map((message) =>
@@ -559,11 +566,12 @@ export default function App() {
       )
       clearOffline()
       return true
-    } catch {
-      updateOutboxStatus(item.id, 'sending')
+    } catch (error) {
+      console.error('POST /api/messages error', error)
+      updateOutboxStatus(item.id, 'failed')
       setMessages((current) =>
         current.map((message) =>
-          message.id === item.id ? { ...message, status: 'sending' } : message,
+          message.id === item.id ? { ...message, status: 'failed' } : message,
         ),
       )
       scheduleOffline()
@@ -593,6 +601,7 @@ export default function App() {
   }
 
   async function sendMessage(threadId: string, text: string, gifUrl?: string) {
+    console.log('sendMessage() called', { text, chatId: threadId, user: ownUsername })
     const plain = (gifUrl ?? text).trim()
     if (!plain) return
     const id = randomId()
@@ -610,6 +619,7 @@ export default function App() {
     }
     upsertOutbox(item)
     setMessages((current) => mergeChatMessages(current, [outboxToChatMessage(item)]))
+    console.log('Added to chat list', { id, chatId: threadId, text: plain, time })
     await deliverMessage(item)
   }
 
@@ -726,6 +736,7 @@ export default function App() {
   }
 
   function submitDraft() {
+    console.log('Send tapped', { chatId: activeThreadId, user: ownUsername, draft })
     const value = draft.trim()
     if (!value) return
     void sendMessage(activeThreadId, value)
