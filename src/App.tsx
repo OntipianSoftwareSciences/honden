@@ -79,6 +79,7 @@ const localPeople = [
 
 const wsBase = sameOriginWs('/ws')
 const ecdh = { name: 'ECDH', namedCurve: 'P-256' } as const
+const unreadableMessage = "This message couldn't be read on this device."
 
 function parseEncrypted(text: string): EncryptedPayload | null {
   try {
@@ -90,6 +91,10 @@ function parseEncrypted(text: string): EncryptedPayload | null {
     return null
   }
   return null
+}
+
+function looksEncrypted(text: string): boolean {
+  return parseEncrypted(text) !== null || /^\s*\{[\s\S]*"iv"\s*:[\s\S]*"ciphertext"\s*:/.test(text)
 }
 
 async function sharedKey(identity: Identity, username: string): Promise<CryptoKey | null> {
@@ -107,27 +112,26 @@ async function sharedKey(identity: Identity, username: string): Promise<CryptoKe
 
 async function decryptWireText(
   text: string,
-  identity: Identity,
+  identity: Identity | null,
   sender: string,
   chatId: string,
 ): Promise<string> {
+  if (!looksEncrypted(text)) return text
   const payload = parseEncrypted(text)
-  if (!payload) return text
+  if (!payload || !identity) return unreadableMessage
   const key = await sharedKey(identity, sender === ownUsername ? chatId : sender)
-  if (!key) return text
+  if (!key) return unreadableMessage
   try {
     return await decryptText(payload, key)
   } catch {
-    return text
+    return unreadableMessage
   }
 }
 
 async function toChatMessage(message: WireMessage, identity: Identity | null): Promise<ChatMessage> {
   const timestamp = new Date(message.time).getTime()
   const sender = normalizeUsername(message.sender)
-  const text = identity
-    ? await decryptWireText(message.text, identity, sender, message.chatId)
-    : message.text
+  const text = await decryptWireText(message.text, identity, sender, message.chatId)
   return {
     id: message.id,
     threadId: message.chatId,
@@ -170,20 +174,24 @@ async function loadIdentity(username: string): Promise<Identity> {
   const key = `honden.identity.${username}`
   const raw = localStorage.getItem(key)
   if (raw) {
-    const saved = JSON.parse(raw) as { privateJwk: JsonWebKey; publicJwk: JsonWebKey }
-    const privateKey = await crypto.subtle.importKey(
-      'jwk',
-      saved.privateJwk,
-      ecdh,
-      true,
-      ['deriveBits'],
-    )
-    const publicKey = await importPublicKey(saved.publicJwk)
-    return { privateKey, publicKey, publicJwk: saved.publicJwk }
+    try {
+      const saved = JSON.parse(raw) as { privateJwk: JsonWebKey; publicJwk: JsonWebKey }
+      const privateKey = await crypto.subtle.importKey(
+        'jwk',
+        saved.privateJwk,
+        ecdh,
+        true,
+        ['deriveBits'],
+      )
+      const publicKey = await importPublicKey(saved.publicJwk)
+      console.log('Key loaded', username)
+      return { privateKey, publicKey, publicJwk: saved.publicJwk }
+    } catch {}
   }
   const identity = await createIdentity()
   const privateJwk = await crypto.subtle.exportKey('jwk', identity.privateKey)
   localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }))
+  console.log('Key created', username)
   return identity
 }
 
