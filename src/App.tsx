@@ -730,16 +730,21 @@ export default function App() {
     composerRef.current?.focus()
   }
 
-  function sendGif(gif: GifResult) {
-    void sendMessage(activeThreadId, '', gif.url)
+  function sendGif(gif: GifResult, chatId = activeThreadId) {
+    void sendMessage(chatId, '', gif.url)
     setPickerOpen(false)
   }
 
-  function submitDraft() {
-    console.log('Send tapped', { chatId: activeThreadId, user: ownUsername, draft })
+  function submitDraft(chatId = activeThreadId) {
+    console.log('Send tapped', {
+      activeThreadId,
+      chatId,
+      user: ownUsername,
+      draft,
+    })
     const value = draft.trim()
     if (!value) return
-    void sendMessage(activeThreadId, value)
+    void sendMessage(chatId, value)
     setDraft('')
   }
 
@@ -995,7 +1000,7 @@ export default function App() {
             {pickerOpen && (
               <MediaPicker
                 onEmoji={insertEmoji}
-                onGif={sendGif}
+                onGif={(gif) => sendGif(gif, threadId)}
                 onClose={() => setPickerOpen(false)}
               />
             )}
@@ -1031,7 +1036,7 @@ export default function App() {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault()
-                    submitDraft()
+                    submitDraft(threadId)
                   }
                 }}
                 placeholder="Message…"
@@ -1047,7 +1052,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={submitDraft}
+                onClick={() => submitDraft(threadId)}
                 className="h-12 rounded-2xl bg-heart-pink px-5 text-base font-semibold text-white transition hover:bg-deep-rose"
               >
                 Send
