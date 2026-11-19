@@ -3,7 +3,7 @@ import { joinUrl } from '../net/invite'
 import { normalizeUsername } from '../store/messages'
 
 type Props = {
-  onAdd: (username: string) => boolean
+  onAdd: (username: string) => boolean | Promise<boolean>
   onBack: () => void
 }
 
@@ -12,9 +12,10 @@ export default function AddUser({ onAdd, onBack }: Props) {
   const [error, setError] = useState('')
   const [link, setLink] = useState('')
 
-  function add() {
+  async function add() {
     const value = normalizeUsername(username)
-    if (!value || !onAdd(value)) {
+    const found = value ? await onAdd(value) : false
+    if (!found) {
       const shown = value || username.trim().replace(/^@/, '')
       setError(`We couldn't find @${shown}. Check the spelling and try again.`)
       return
@@ -56,7 +57,7 @@ export default function AddUser({ onAdd, onBack }: Props) {
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') add()
+                if (event.key === 'Enter') void add()
               }}
               aria-label="Username"
               placeholder="@username"
@@ -67,7 +68,7 @@ export default function AddUser({ onAdd, onBack }: Props) {
             )}
             <button
               type="button"
-              onClick={add}
+              onClick={() => void add()}
               className="mt-4 w-full rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
             >
               Add

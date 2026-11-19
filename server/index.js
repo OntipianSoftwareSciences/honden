@@ -31,6 +31,12 @@ function isMessage(value) {
         typeof item.text === 'string' &&
         typeof item.time === 'string');
 }
+function cleanUsername(value) {
+    if (typeof value !== 'string')
+        return null;
+    const name = value.trim().replace(/^@/, '').trim().toLowerCase();
+    return /^[a-z0-9_]{2,24}$/.test(name) ? name : null;
+}
 let messages = [];
 if (existsSync(dataFile)) {
     try {
@@ -46,29 +52,27 @@ let users = [];
 if (existsSync(usersFile)) {
     try {
         const parsed = JSON.parse(readFileSync(usersFile, 'utf8'));
-        if (Array.isArray(parsed))
-            users = parsed.filter((item) => {
+        if (Array.isArray(parsed)) {
+            users = parsed
+                .filter((item) => {
                 const user = item;
                 return (typeof user.username === 'string' &&
                     typeof user.salt === 'string' &&
                     typeof user.passwordHash === 'string');
-            });
+            })
+                .map((user) => ({ ...user, username: cleanUsername(user.username) ?? user.username }));
+        }
     }
     catch {
         users = [];
     }
 }
+console.log(`Loaded ${users.length} users from users.json`);
 function persist() {
     writeFileSync(dataFile, JSON.stringify(messages, null, 2));
 }
 function persistUsers() {
     writeFileSync(usersFile, JSON.stringify(users, null, 2));
-}
-function cleanUsername(value) {
-    if (typeof value !== 'string')
-        return null;
-    const name = value.trim().replace(/^@/, '').toLowerCase();
-    return /^[a-z0-9_]{2,24}$/.test(name) ? name : null;
 }
 function hashPassword(password, salt) {
     return scryptSync(password, salt, 64).toString('hex');
@@ -188,6 +192,22 @@ app.post('/api/reset', (req, res) => {
     user.passwordHash = hashPassword(body.newPassword, salt);
     persistUsers();
     res.json({ username: user.username, notice: recoveryNotice });
+});
+app.get('/api/users/:username', (req, res) => {
+    const received = String(req.params.username ?? '');
+    console.log('[users lookup] received username:', JSON.stringify(received));
+    console.log('[users lookup] stored usernames:', JSON.stringify(users.map((user) => user.username)));
+    const username = cleanUsername(received);
+    if (!username) {
+        res.status(400).json({ error: accountError });
+        return;
+    }
+    const user = users.find((item) => item.username === username);
+    if (!user) {
+        res.status(404).json({ error: accountError });
+        return;
+    }
+    res.json({ username: user.username });
 });
 app.get('/api/public-key', (req, res) => {
     const username = cleanUsername(req.query.username);

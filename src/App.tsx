@@ -135,6 +135,17 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
   }
 }
 
+async function lookupAccount(username: string): Promise<string | null> {
+  try {
+    const response = await fetch(`/api/users/${encodeURIComponent(username)}`)
+    if (!response.ok) return null
+    const data = (await response.json()) as { username?: unknown }
+    return typeof data.username === 'string' ? normalizeUsername(data.username) || null : null
+  } catch {
+    return null
+  }
+}
+
 async function loadIdentity(username: string): Promise<Identity> {
   const key = `honden.identity.${username}`
   const raw = localStorage.getItem(key)
@@ -561,11 +572,13 @@ export default function App() {
     setScreen('chat')
   }
 
-  function addByUsername(raw: string, allowSelf = false): boolean {
+  async function addByUsername(raw: string, allowSelf = false): Promise<boolean> {
     const username = normalizeUsername(raw)
     if (!username || (!allowSelf && username === ownUsername)) return false
-    const person = localPeople.find((item) => item.username === username)
-    if (!person) return false
+    const local = localPeople.find((item) => item.username === username)
+    const account = local || allowSelf ? null : await lookupAccount(username)
+    if (!local && !account && !allowSelf) return false
+    const person = local ?? { name: account ?? username, username }
     const existing = loadThreads()
     if (!existing.some((thread) => thread.id === username)) {
       saveThreads([
@@ -577,16 +590,16 @@ export default function App() {
     return true
   }
 
-  function newThread(name: string) {
+  async function newThread(name: string) {
     const username = normalizeUsername(name)
-    if (addByUsername(username)) {
+    if (await addByUsername(username)) {
       setActiveThreadId(username)
       setScreen('chat')
     }
   }
 
   function acceptInvite() {
-    addByUsername(ownUsername, true)
+    void addByUsername(ownUsername, true)
     setScreen('chats')
   }
 

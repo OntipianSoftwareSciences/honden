@@ -31,7 +31,7 @@ export function formatTime(timestamp: number): string {
 }
 
 export function normalizeUsername(value: string): string {
-  return value.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9_]/g, '')
+  return value.trim().replace(/^@/, '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '')
 }
 
 export function loadThreads(): Thread[] {
