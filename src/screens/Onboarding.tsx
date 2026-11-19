@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { apiUrl } from '../api/client'
 import HeartMark from '../components/HeartMark'
 
 type Props = {
@@ -48,7 +49,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch('/api/login', {
+      const response = await fetch(apiUrl('/api/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: name, password }),
@@ -76,7 +77,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch('/api/accounts', {
+      const response = await fetch(apiUrl('/api/accounts'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: name, password }),
@@ -116,7 +117,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch('/api/reset', {
+      const response = await fetch(apiUrl('/api/reset'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

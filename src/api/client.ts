@@ -1,3 +1,5 @@
+import { isTauri } from '@tauri-apps/api/core'
+
 export type CallKind = 'voice' | 'video'
 
 export type SignalEvent = {
@@ -60,9 +62,21 @@ function getSignalId() {
   return id
 }
 
+const renderOrigin = 'https://honden.onrender.com'
+
+export function remoteOrigin(): string {
+  return isTauri() ? renderOrigin : window.location.origin
+}
+
+export function apiUrl(path: string): string {
+  if (!path.startsWith('/')) return path
+  return `${remoteOrigin()}${path}`
+}
+
 export function sameOriginWs(path = '/ws'): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}${path}`
+  const url = new URL(remoteOrigin())
+  const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${url.host}${path}`
 }
 
 export function connectSignals(onEvent: (event: SignalEvent) => void): SignalClient {

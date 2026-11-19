@@ -499,7 +499,11 @@ app.get('/api/users/:username', (req, res) => {
     res.status(404).json({ error: accountError })
     return
   }
-  res.json({ username: user.username })
+  res.json({
+    username: user.username,
+    publicKey: user.publicJwk ?? null,
+    publicJwk: user.publicJwk ?? null,
+  })
 })
 
 app.get('/api/public-key', (req, res) => {
@@ -522,6 +526,7 @@ app.post('/api/public-key', async (req, res) => {
   }
   user.publicJwk = publicJwk as Record<string, unknown>
   await persistUsers()
+  console.log('Public key uploaded', username)
   res.json({ ok: true })
 })
 
@@ -542,9 +547,15 @@ app.get('/health', (_req, res) => {
 
 app.get('/api/messages', (req, res) => {
   const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : 'alex'
+  const viewer = typeof req.query.viewer === 'string' ? cleanUsername(req.query.viewer) : ''
   res.json(
     messages
-      .filter((message) => message.chatId === chatId)
+      .filter((message) =>
+        viewer
+          ? (message.chatId === chatId && message.sender === viewer) ||
+            (message.chatId === viewer && message.sender === chatId)
+          : message.chatId === chatId,
+      )
       .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()),
   )
 })

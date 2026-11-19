@@ -46,6 +46,7 @@ import {
 } from './store/messages'
 import type { OutboxMessage, Thread } from './store/messages'
 import {
+  apiUrl,
   connectSignals,
   getSignalToken,
   sameOriginWs,
@@ -99,11 +100,12 @@ function looksEncrypted(text: string): boolean {
 
 async function sharedKey(identity: Identity, username: string): Promise<CryptoKey | null> {
   try {
-    const response = await fetch(`/api/public-key?username=${encodeURIComponent(username)}`)
+    const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(username)}`))
     if (!response.ok) return null
-    const data = (await response.json()) as { publicJwk?: JsonWebKey }
-    if (!data.publicJwk) return null
-    const publicKey = await importPublicKey(data.publicJwk)
+    const data = (await response.json()) as { publicKey?: JsonWebKey; publicJwk?: JsonWebKey }
+    const publicJwk = data.publicKey ?? data.publicJwk
+    if (!publicJwk) return null
+    const publicKey = await importPublicKey(publicJwk)
     return await deriveSharedKey(identity.privateKey, publicKey)
   } catch {
     return null
@@ -121,6 +123,7 @@ async function decryptWireText(
   if (!payload || !identity) return unreadableMessage
   const key = await sharedKey(identity, sender === ownUsername ? chatId : sender)
   if (!key) return unreadableMessage
+  console.log('Decrypting with local private key', ownUsername)
   try {
     return await decryptText(payload, key)
   } catch {
@@ -132,9 +135,10 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
   const timestamp = new Date(message.time).getTime()
   const sender = normalizeUsername(message.sender)
   const text = await decryptWireText(message.text, identity, sender, message.chatId)
+  const threadId = sender === ownUsername ? message.chatId : sender
   return {
     id: message.id,
-    threadId: message.chatId,
+    threadId,
     senderId: `@${sender}`,
     from: sender === ownUsername ? 'me' : 'them',
     time: formatTime(timestamp),
@@ -145,7 +149,7 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
 
 async function lookupAccount(username: string): Promise<string | null> {
   try {
-    const response = await fetch(`/api/users/${encodeURIComponent(username)}`)
+    const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(username)}`))
     if (!response.ok) return null
     const data = (await response.json()) as { username?: unknown }
     return typeof data.username === 'string' ? normalizeUsername(data.username) || null : null
@@ -196,11 +200,20 @@ async function loadIdentity(username: string): Promise<Identity> {
 }
 
 async function publishKey(username: string, identity: Identity) {
-  await fetch('/api/public-key', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, publicJwk: identity.publicJwk }),
-  }).catch(() => undefined)
+  try {
+    const response = await fetch(apiUrl('/api/public-key'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, publicJwk: identity.publicJwk }),
+    })
+    if (!response.ok) {
+      console.error('Public key upload failed', username, response.status)
+      return
+    }
+    console.log('Public key uploaded', username)
+  } catch (error) {
+    console.error('Public key upload failed', username, error)
+  }
 }
 
 const defaultUser: AccountUser = {
@@ -400,7 +413,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void fetch('/api/messages?chatId=health')
+    void fetch(apiUrl('/api/messages?chatId=health'))
       .then((response) => {
         if (response.ok) clearOffline()
       })
@@ -415,7 +428,11 @@ export default function App() {
     if (screen !== 'chat') return
     const cached = loadChatBackup().filter((message) => message.threadId === activeThreadId)
     setMessages((current) => mergeChatMessages(current, cached))
-    void fetch(`/api/messages?chatId=${encodeURIComponent(activeThreadId)}`)
+    void fetch(
+      apiUrl(
+        `/api/messages?chatId=${encodeURIComponent(activeThreadId)}&viewer=${encodeURIComponent(ownUsername)}`,
+      ),
+    )
       .then((response) => {
         if (!response.ok) throw new Error('offline')
         clearOffline()
@@ -527,6 +544,7 @@ export default function App() {
     identityRef.current = current
     const key = await sharedKey(current, item.threadId)
     if (!key) return item.text
+    console.log('Encrypting for receiver', item.threadId)
     return JSON.stringify(await encryptText(item.plain, key))
   }
 
@@ -543,7 +561,7 @@ export default function App() {
         text: item.text,
         sender: item.sender,
       })
-      const response = await fetch('/api/messages', {
+      const response = await fetch(apiUrl('/api/messages'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -636,7 +654,7 @@ export default function App() {
     setMessages((current) => current.filter((item) => item.id !== id))
     try {
       await fetch(
-        `/api/messages/${encodeURIComponent(id)}?chatId=${encodeURIComponent(threadId)}`,
+        apiUrl(`/api/messages/${encodeURIComponent(id)}?chatId=${encodeURIComponent(threadId)}`),
         { method: 'DELETE' },
       )
     } catch {
@@ -761,7 +779,7 @@ export default function App() {
     const token = getSignalToken()
     if (!token) return
     try {
-      await fetch(`/api/auth/profile`, {
+      await fetch(apiUrl(`/api/auth/profile`), {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -779,7 +797,7 @@ export default function App() {
     const token = getSignalToken()
     if (!token) return
     try {
-      await fetch(`/api/auth/devices/${id}`, {
+      await fetch(apiUrl(`/api/auth/devices/${id}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -810,7 +828,7 @@ export default function App() {
     )
     if (token && isUuid) {
       try {
-        await fetch(`/api/contacts/${contactId}`, {
+        await fetch(apiUrl(`/api/contacts/${contactId}`), {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',

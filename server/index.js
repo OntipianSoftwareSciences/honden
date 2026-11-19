@@ -435,7 +435,11 @@ app.get('/api/users/:username', (req, res) => {
         res.status(404).json({ error: accountError });
         return;
     }
-    res.json({ username: user.username });
+    res.json({
+        username: user.username,
+        publicKey: user.publicJwk ?? null,
+        publicJwk: user.publicJwk ?? null,
+    });
 });
 app.get('/api/public-key', (req, res) => {
     const username = cleanUsername(req.query.username);
@@ -456,6 +460,7 @@ app.post('/api/public-key', async (req, res) => {
     }
     user.publicJwk = publicJwk;
     await persistUsers();
+    console.log('Public key uploaded', username);
     res.json({ ok: true });
 });
 app.get('/downloads/honden.apk', (_req, res) => {
@@ -473,8 +478,12 @@ app.get('/health', (_req, res) => {
 });
 app.get('/api/messages', (req, res) => {
     const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : 'alex';
+    const viewer = typeof req.query.viewer === 'string' ? cleanUsername(req.query.viewer) : '';
     res.json(messages
-        .filter((message) => message.chatId === chatId)
+        .filter((message) => viewer
+        ? (message.chatId === chatId && message.sender === viewer) ||
+            (message.chatId === viewer && message.sender === chatId)
+        : message.chatId === chatId)
         .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()));
 });
 app.post('/api/messages', async (req, res) => {
