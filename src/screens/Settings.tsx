@@ -14,6 +14,7 @@ type Props = {
   inviteLink: string
   onNewInvite: () => void
   installPrompt: BeforeInstallPromptEvent | null
+  onLogout: () => void
 }
 
 const noteText = 'text-[0.8125rem] text-soft-grey'
@@ -27,6 +28,7 @@ export default function Settings({
   inviteLink,
   onNewInvite,
   installPrompt,
+  onLogout,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [relayDraft, setRelayDraft] = useState(settings.relayUrl)
@@ -270,6 +272,20 @@ export default function Settings({
                 onChange={(next) => update('largeText', next)}
               />
             </div>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">Account</h2>
+            <p className={`mb-4 ${noteText}`}>
+              You can come back with your username and password.
+            </p>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="w-full rounded-xl border border-border px-6 py-3 text-base font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              Log out
+            </button>
           </section>
         </div>
 

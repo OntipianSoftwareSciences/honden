@@ -65,7 +65,8 @@ type WireMessage = {
   time: string
 }
 
-let ownUsername = localStorage.getItem('honden.username') ?? 'sukar3tto'
+const fallbackUsername = 'sukar3tto'
+let ownUsername = localStorage.getItem('honden.username') ?? fallbackUsername
 const localPeople = [
   { name: 'You', username: ownUsername },
   { name: 'Alex', username: 'alex' },
@@ -272,6 +273,7 @@ export default function App() {
   const [devices, setDevices] = useState<DeviceSession[]>(loadDevices)
   const [modal, setModal] = useState<'profile' | 'security' | null>(null)
   const [offline, setOffline] = useState(false)
+  const [notice, setNotice] = useState('')
   const offlineTimer = useRef<number | undefined>(undefined)
   const [retry, setRetry] = useState(0)
   const [longPressedId, setLongPressedId] = useState('')
@@ -522,7 +524,7 @@ export default function App() {
     }
   }
 
-  async function finishLogin(name: string) {
+  async function finishLogin(name: string, loginNotice?: string) {
     const loaded = await loadIdentity(name).catch(() => null)
     if (loaded) {
       setIdentity(loaded)
@@ -530,6 +532,7 @@ export default function App() {
     }
     ownUsername = name
     setUsername(name)
+    setNotice(loginNotice ?? '')
     localStorage.setItem('honden.username', name)
     setUser((current) => ({ ...current, id: name, username: name, displayName: 'You' }))
     setScreen('chats')
@@ -661,6 +664,13 @@ export default function App() {
     localStorage.removeItem('honden.token')
     localStorage.removeItem('honden.auth')
     localStorage.removeItem('honden.auth_token')
+    localStorage.removeItem('honden.username')
+    localStorage.removeItem('honden.user')
+    ownUsername = fallbackUsername
+    setUsername(fallbackUsername)
+    setUser({ ...defaultUser, id: fallbackUsername, username: fallbackUsername, displayName: 'You' })
+    setIdentity(null)
+    setNotice('')
     setModal(null)
     setScreen('onboarding')
   }
@@ -688,7 +698,7 @@ export default function App() {
     if (activeThreadId === contactId) setScreen('chats')
   }
 
-  let     screenView = <Onboarding onDone={(name) => void finishLogin(name)} />
+  let     screenView = <Onboarding onDone={(name, loginNotice) => void finishLogin(name, loginNotice)} />
 
   if (screen === 'invite') {
     screenView = <Onboarding onDone={acceptInvite} />
@@ -705,6 +715,7 @@ export default function App() {
         inviteLink={inviteUrl(invite)}
         onNewInvite={newInvite}
         installPrompt={installPrompt}
+        onLogout={signOut}
       />
     )
   } else if (screen === 'chat') {
@@ -972,6 +983,21 @@ export default function App() {
 
   return (
     <>
+      {notice && !offline && (
+        <div
+          aria-live="polite"
+          className="fixed inset-x-0 top-0 z-[59] bg-soft-blush px-4 py-2 text-center text-[13px] text-warm-charcoal shadow-soft"
+        >
+          {notice}{' '}
+          <button
+            type="button"
+            onClick={() => setNotice('')}
+            className="font-bold text-deep-rose underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+          >
+            OK
+          </button>
+        </div>
+      )}
       {offline && (
         <div className="fixed inset-x-0 top-0 z-[60] bg-soft-blush px-4 py-2 text-center text-[13px] text-warm-charcoal shadow-soft">
           You're offline right now. Your message will send when you're back.
