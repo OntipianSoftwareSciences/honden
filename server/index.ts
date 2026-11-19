@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
+import { Pool } from 'pg'
 import { WebSocket, WebSocketServer } from 'ws'
 
 type StoredMessage = {
@@ -26,8 +27,8 @@ type StoredUser = {
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
-// free tier, local JSON only
-const dataDir = join(here, 'data')
+const legacyDataDir = join(here, 'data')
+const dataDir = process.env.DATA_DIR || legacyDataDir
 const dataFile = join(dataDir, 'messages.json')
 const usersFile = join(dataDir, 'users.json')
 const downloadsDir = join(here, 'downloads')
@@ -54,44 +55,83 @@ function isMessage(value: unknown): value is StoredMessage {
   )
 }
 
+function isStoredUser(value: unknown): value is StoredUser {
+  if (!value || typeof value !== 'object') return false
+  const user = value as Partial<StoredUser>
+  return (
+    typeof user.username === 'string' &&
+    typeof user.salt === 'string' &&
+    typeof user.passwordHash === 'string'
+  )
+}
+
 function cleanUsername(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const name = value.trim().replace(/^@/, '').trim().toLowerCase()
   return /^[a-z0-9_]{2,24}$/.test(name) ? name : null
 }
 
-let messages: StoredMessage[] = []
-if (existsSync(dataFile)) {
+function readJsonArray<T>(file: string, guard: (value: unknown) => value is T): T[] {
+  if (!existsSync(file)) return []
   try {
-    const parsed: unknown = JSON.parse(readFileSync(dataFile, 'utf8'))
-    if (Array.isArray(parsed)) messages = parsed.filter(isMessage)
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    return Array.isArray(parsed) ? parsed.filter(guard) : []
   } catch {
-    messages = []
+    return []
   }
 }
-console.log(`Loaded ${messages.length} messages from messages.json`)
 
-let users: StoredUser[] = []
-if (existsSync(usersFile)) {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(usersFile, 'utf8'))
-    if (Array.isArray(parsed)) {
-      users = parsed
-        .filter((item): item is StoredUser => {
-          const user = item as Partial<StoredUser>
-          return (
-            typeof user.username === 'string' &&
-            typeof user.salt === 'string' &&
-            typeof user.passwordHash === 'string'
-          )
-        })
-        .map((user) => ({ ...user, username: cleanUsername(user.username) ?? user.username }))
-    }
-  } catch {
-    users = []
-  }
+function jsonPaths(name: string): string[] {
+  const current = join(dataDir, name)
+  const legacy = join(legacyDataDir, name)
+  return dataDir === legacyDataDir ? [current] : [current, legacy]
 }
-console.log(`Loaded ${users.length} users from users.json`)
+
+function readMessagesFromJson(): StoredMessage[] {
+  const seen = new Set<string>()
+  const found: StoredMessage[] = []
+  for (const file of jsonPaths('messages.json')) {
+    for (const message of readJsonArray(file, isMessage)) {
+      if (seen.has(message.id)) continue
+      seen.add(message.id)
+      found.push(message)
+    }
+  }
+  return found
+}
+
+function readUsersFromJson(): StoredUser[] {
+  const seen = new Set<string>()
+  const found: StoredUser[] = []
+  for (const file of jsonPaths('users.json')) {
+    for (const user of readJsonArray(file, isStoredUser)) {
+      const username = cleanUsername(user.username) ?? user.username
+      if (seen.has(username)) continue
+      seen.add(username)
+      found.push({ ...user, username })
+    }
+  }
+  return found
+}
+
+function parseJwk(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === 'object') return value as Record<string, unknown>
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+let messages: StoredMessage[] = []
+let users: StoredUser[] = []
+let pool: Pool | null = null
+let storageSource: 'Postgres' | 'Disk' = 'Disk'
+let writeQueue: Promise<void> = Promise.resolve()
 
 function writeJson(file: string, value: unknown): void {
   const temp = `${file}.tmp`
@@ -99,12 +139,209 @@ function writeJson(file: string, value: unknown): void {
   renameSync(temp, file)
 }
 
-function persist() {
-  writeJson(dataFile, messages)
+async function migrateJsonToPostgres(activePool: Pool): Promise<void> {
+  const marker = await activePool.query("SELECT value FROM storage_meta WHERE key = 'json_migrated'")
+  if ((marker.rowCount ?? 0) > 0) return
+
+  const jsonUsers = readUsersFromJson()
+  const jsonMessages = readMessagesFromJson()
+  const client = await activePool.connect()
+  try {
+    await client.query('BEGIN')
+    for (const user of jsonUsers) {
+      await client.query(
+        `INSERT INTO users
+          (username, salt, password_hash, public_jwk, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (username) DO NOTHING`,
+        [
+          user.username,
+          user.salt,
+          user.passwordHash,
+          user.publicJwk ? JSON.stringify(user.publicJwk) : null,
+          user.recoverySalt ?? null,
+          user.recoveryHash ?? null,
+          user.recoveryAttempts ?? 0,
+          user.recoveryLockedUntil ?? 0,
+        ],
+      )
+    }
+    for (const message of jsonMessages) {
+      await client.query(
+        `INSERT INTO messages (id, chat_id, sender, text, time)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO NOTHING`,
+        [message.id, message.chatId, message.sender, message.text, message.time],
+      )
+    }
+    await client.query(
+      `INSERT INTO storage_meta (key, value) VALUES ('json_migrated', '1')
+       ON CONFLICT (key) DO NOTHING`,
+    )
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
 }
 
-function persistUsers() {
-  writeJson(usersFile, users)
+async function loadFromPostgres(activePool: Pool): Promise<void> {
+  const userRows = await activePool.query('SELECT * FROM users ORDER BY username')
+  users = userRows.rows.map((row) => ({
+    username: String(row.username),
+    salt: String(row.salt),
+    passwordHash: String(row.password_hash),
+    publicJwk: parseJwk(row.public_jwk),
+    recoverySalt: row.recovery_salt == null ? undefined : String(row.recovery_salt),
+    recoveryHash: row.recovery_hash == null ? undefined : String(row.recovery_hash),
+    recoveryAttempts: Number(row.recovery_attempts ?? 0),
+    recoveryLockedUntil: Number(row.recovery_locked_until ?? 0),
+  }))
+
+  const messageRows = await activePool.query(
+    'SELECT id, chat_id, sender, text, time FROM messages ORDER BY time ASC',
+  )
+  messages = messageRows.rows.map((row) => ({
+    id: String(row.id),
+    chatId: String(row.chat_id),
+    sender: String(row.sender),
+    text: String(row.text),
+    time: String(row.time),
+  }))
+}
+
+function queuePostgresWrite(write: () => Promise<void>): Promise<void> {
+  const next = writeQueue
+    .then(write)
+    .catch((error) => console.error('Storage write failed', error))
+  writeQueue = next
+  return next
+}
+
+async function initStorage(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL
+  if (databaseUrl) {
+    try {
+      const activePool = new Pool({
+        connectionString: databaseUrl,
+        max: 3,
+        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+      })
+      await activePool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          username text PRIMARY KEY,
+          salt text NOT NULL,
+          password_hash text NOT NULL,
+          public_jwk jsonb,
+          recovery_salt text,
+          recovery_hash text,
+          recovery_attempts integer NOT NULL DEFAULT 0,
+          recovery_locked_until bigint NOT NULL DEFAULT 0
+        )
+      `)
+      await activePool.query(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id text PRIMARY KEY,
+          chat_id text NOT NULL,
+          sender text NOT NULL,
+          text text NOT NULL,
+          time text NOT NULL
+        )
+      `)
+      await activePool.query(`
+        CREATE TABLE IF NOT EXISTS storage_meta (
+          key text PRIMARY KEY,
+          value text NOT NULL
+        )
+      `)
+      await migrateJsonToPostgres(activePool)
+      pool = activePool
+      await loadFromPostgres(activePool)
+      storageSource = 'Postgres'
+      console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
+      return
+    } catch (error) {
+      console.error('Postgres storage unavailable; using disk storage', error)
+      if (pool) {
+        void pool.end().catch(() => undefined)
+        pool = null
+      }
+    }
+  }
+  storageSource = 'Disk'
+  messages = readMessagesFromJson()
+  users = readUsersFromJson()
+  console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
+}
+
+await initStorage()
+
+function persist(): Promise<void> {
+  const activePool = pool
+  if (!activePool) {
+    writeJson(dataFile, messages)
+    return Promise.resolve()
+  }
+  return queuePostgresWrite(async () => {
+    const client = await activePool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('DELETE FROM messages')
+      for (const message of messages) {
+        await client.query(
+          `INSERT INTO messages (id, chat_id, sender, text, time)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [message.id, message.chatId, message.sender, message.text, message.time],
+        )
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  })
+}
+
+function persistUsers(): Promise<void> {
+  const activePool = pool
+  if (!activePool) {
+    writeJson(usersFile, users)
+    return Promise.resolve()
+  }
+  return queuePostgresWrite(async () => {
+    const client = await activePool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('DELETE FROM users')
+      for (const user of users) {
+        await client.query(
+          `INSERT INTO users
+            (username, salt, password_hash, public_jwk, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            user.username,
+            user.salt,
+            user.passwordHash,
+            user.publicJwk ? JSON.stringify(user.publicJwk) : null,
+            user.recoverySalt ?? null,
+            user.recoveryHash ?? null,
+            user.recoveryAttempts ?? 0,
+            user.recoveryLockedUntil ?? 0,
+          ],
+        )
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  })
 }
 
 function hashPassword(password: string, salt: string): string {
@@ -147,7 +384,7 @@ app.use((_req, res, next) => {
 
 app.use(express.json())
 
-app.post('/api/accounts', (req, res) => {
+app.post('/api/accounts', async (req, res) => {
   const username = cleanUsername((req.body as { username?: unknown } | undefined)?.username)
   const password = (req.body as { password?: unknown } | undefined)?.password
   if (!username || typeof password !== 'string' || !password) {
@@ -171,7 +408,7 @@ app.post('/api/accounts', (req, res) => {
     recoveryAttempts: 0,
     recoveryLockedUntil: 0,
   })
-  persistUsers()
+  await persistUsers()
   res.status(201).json({ username, recoveryCode })
 })
 
@@ -191,7 +428,7 @@ app.post('/api/login', (req, res) => {
   res.json({ username: user.username })
 })
 
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', async (req, res) => {
   const body = req.body as {
     username?: unknown
     recoveryCode?: unknown
@@ -235,7 +472,7 @@ app.post('/api/reset', (req, res) => {
     } else {
       res.status(403).json({ error: recoveryError })
     }
-    persistUsers()
+    await persistUsers()
     return
   }
 
@@ -244,7 +481,7 @@ app.post('/api/reset', (req, res) => {
   const salt = randomBytes(16).toString('hex')
   user.salt = salt
   user.passwordHash = hashPassword(body.newPassword, salt)
-  persistUsers()
+  await persistUsers()
   res.json({ username: user.username, notice: recoveryNotice })
 })
 
@@ -275,7 +512,7 @@ app.get('/api/public-key', (req, res) => {
   res.json({ username: user.username, publicJwk: user.publicJwk })
 })
 
-app.post('/api/public-key', (req, res) => {
+app.post('/api/public-key', async (req, res) => {
   const username = cleanUsername((req.body as { username?: unknown } | undefined)?.username)
   const publicJwk = (req.body as { publicJwk?: unknown } | undefined)?.publicJwk
   const user = users.find((item) => item.username === username)
@@ -284,7 +521,7 @@ app.post('/api/public-key', (req, res) => {
     return
   }
   user.publicJwk = publicJwk as Record<string, unknown>
-  persistUsers()
+  await persistUsers()
   res.json({ ok: true })
 })
 
@@ -312,7 +549,7 @@ app.get('/api/messages', (req, res) => {
   )
 })
 
-app.post('/api/messages', (req, res) => {
+app.post('/api/messages', async (req, res) => {
   const body = req.body as Partial<StoredMessage> | undefined
   console.log(
     `POST /api/messages, chatId=${typeof body?.chatId === 'string' ? body.chatId : ''}, text=${
@@ -338,20 +575,20 @@ app.post('/api/messages', (req, res) => {
     time: new Date().toISOString(),
   }
   messages.push(message)
-  persist()
+  await persist()
   console.log(`Saved ${messages.length} messages`)
   broadcast({ type: 'message', message })
   res.status(201).json(message)
 })
 
-app.delete('/api/messages/:id', (req, res) => {
+app.delete('/api/messages/:id', async (req, res) => {
   const next = messages.filter((message) => message.id !== req.params.id)
   if (next.length === messages.length) {
     res.status(404).json({ error: errorCopy })
     return
   }
   messages = next
-  persist()
+  await persist()
   broadcast({ type: 'delete', id: req.params.id })
   res.status(204).end()
 })
