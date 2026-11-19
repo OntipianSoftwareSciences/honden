@@ -1,0 +1,49 @@
+{
+  "name": "honden",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:full": "docker compose up -d && node scripts/dev.mjs",
+    "build": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.server.json && node -e \"require('fs').copyFileSync('server-dist/index.js','server/index.js')\" && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:server": "tsc --noEmit -p tsconfig.server.json",
+    "preview": "vite preview",
+    "start:server": "tsx server/index.ts",
+    "start:host": "tsx server/index.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.4.3",
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/websocket": "^11.3.7",
+    "@node-rs/argon2": "^2.2.2",
+    "@tauri-apps/api": "^2.0.0",
+    "express": "^5.3.0",
+    "fastify": "^5.12.8",
+    "jose": "^6.2.18",
+    "lucide-react": "^1.75.0",
+    "pg": "^8.23.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^4.3.3",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

@@ -1,0 +1,172 @@
+import type { EncryptedPayload } from '../crypto/e2ee'
+import type { ChatMessage } from '../types'
+
+export type StoredMessage = {
+  id: string
+  threadId: string
+  senderId: string
+  from: 'me' | 'them'
+  time: string
+  timestamp: number
+  payload: EncryptedPayload
+  text: string
+}
+
+export type Thread = {
+  id: string
+  name: string
+  username: string
+  createdAt: number
+}
+
+const THREADS_KEY = 'honden.threads.v2'
+const MESSAGES_KEY = 'honden.messages.v1'
+const CHAT_BACKUP_KEY = 'honden.chatMessages.v1'
+
+export function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+export function normalizeUsername(value: string): string {
+  return value.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9_]/g, '')
+}
+
+export function loadThreads(): Thread[] {
+  try {
+    const saved = localStorage.getItem(THREADS_KEY)
+    if (!saved) return []
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is Thread =>
+        Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof (item as Thread).id === 'string' &&
+            typeof (item as Thread).name === 'string' &&
+            typeof (item as Thread).username === 'string',
+        ),
+    )
+  } catch {
+    return []
+  }
+}
+
+export function saveThreads(threads: Thread[]): void {
+  localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
+}
+
+export function createThread(name: string): Thread {
+  const username = normalizeUsername(name) || 'someone'
+  const thread: Thread = {
+    id: username,
+    name: name.trim() || 'Someone',
+    username,
+    createdAt: Date.now(),
+  }
+  saveThreads([...loadThreads(), thread])
+  return thread
+}
+
+export function loadMessages(): StoredMessage[] {
+  try {
+    const saved = localStorage.getItem(MESSAGES_KEY)
+    if (!saved) return []
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is StoredMessage =>
+        Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof (item as StoredMessage).id === 'string' &&
+            typeof (item as StoredMessage).threadId === 'string' &&
+            Boolean((item as StoredMessage).payload),
+        ),
+    )
+  } catch {
+    return []
+  }
+}
+
+export function saveMessages(messages: StoredMessage[]): void {
+  localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages))
+}
+
+export function appendMessage(message: StoredMessage): void {
+  const messages = loadMessages()
+  if (messages.some((item) => item.id === message.id)) return
+  saveMessages([...messages, message])
+}
+
+export function updateMessageText(id: string, text: string): void {
+  const messages = loadMessages()
+  const next = messages.map((item) => (item.id === id ? { ...item, text } : item))
+  if (next.some((item, index) => item.text !== messages[index].text)) {
+    saveMessages(next)
+  }
+}
+
+export function removeMessage(id: string): void {
+  saveMessages(loadMessages().filter((item) => item.id !== id))
+}
+
+export function messagesFor(threadId: string): StoredMessage[] {
+  return loadMessages()
+    .filter((item) => item.threadId === threadId)
+    .sort((a, b) => a.timestamp - b.timestamp)
+}
+
+export function loadChatBackup(): ChatMessage[] {
+  try {
+    const saved = localStorage.getItem(CHAT_BACKUP_KEY)
+    if (!saved) return []
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is ChatMessage =>
+        Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof (item as ChatMessage).id === 'string' &&
+            typeof (item as ChatMessage).threadId === 'string' &&
+            typeof (item as ChatMessage).text === 'string' &&
+            typeof (item as ChatMessage).timestamp === 'number',
+        ),
+    )
+  } catch {
+    return []
+  }
+}
+
+export function saveChatBackup(messages: ChatMessage[]): void {
+  localStorage.setItem(CHAT_BACKUP_KEY, JSON.stringify(messages))
+}
+
+export function mergeChatMessages(
+  current: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] {
+  const byId = new Map(current.map((message) => [message.id, message]))
+  for (const message of incoming) {
+    if (!byId.has(message.id)) byId.set(message.id, message)
+  }
+  return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp)
+}
+
+export function subscribeStore(listener: () => void): () => void {
+  const handler = (event: StorageEvent) => {
+    if (
+      event.key === THREADS_KEY ||
+      event.key === MESSAGES_KEY ||
+      event.key === CHAT_BACKUP_KEY
+    ) {
+      listener()
+    }
+  }
+  window.addEventListener('storage', handler)
+  return () => window.removeEventListener('storage', handler)
+}

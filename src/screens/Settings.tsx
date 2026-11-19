@@ -1,0 +1,326 @@
+import { useEffect, useState } from 'react'
+import type { BeforeInstallPromptEvent } from '../hooks/useInstallPrompt'
+import type { Settings, UpdateSetting } from '../hooks/useSettings'
+import type { RelayState } from '../transport/channel'
+import Toggle from '../components/Toggle'
+import HeartMark from '../components/HeartMark'
+
+type Props = {
+  settings: Settings
+  update: UpdateSetting
+  onBack: () => void
+  relayState: RelayState
+  peerCount: number
+  inviteLink: string
+  onNewInvite: () => void
+  installPrompt: BeforeInstallPromptEvent | null
+}
+
+const noteText = 'text-[0.8125rem] text-soft-grey'
+
+export default function Settings({
+  settings,
+  update,
+  onBack,
+  relayState,
+  peerCount,
+  inviteLink,
+  onNewInvite,
+  installPrompt,
+}: Props) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [relayDraft, setRelayDraft] = useState(settings.relayUrl)
+  const [copied, setCopied] = useState(false)
+  const [showInstallHelp, setShowInstallHelp] = useState(false)
+  const [installHandled, setInstallHandled] = useState(false)
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  useEffect(() => {
+    setRelayDraft(settings.relayUrl)
+  }, [settings.relayUrl])
+
+  async function installHonDen() {
+    if (!installPrompt) {
+      setShowInstallHelp(true)
+      return
+    }
+
+    await installPrompt.prompt()
+    const choice = await installPrompt.userChoice
+    if (choice.outcome === 'accepted') {
+      setInstallHandled(true)
+    } else {
+      setShowInstallHelp(true)
+    }
+  }
+
+  return (
+    <main className="screen-fade min-h-screen bg-warm-cream p-4">
+      <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-3xl border border-border bg-white shadow-soft">
+        <header className="flex items-center gap-3 border-b border-border px-6 py-4">
+          <span className="flex h-8 w-8 items-center justify-center rounded-2xl bg-soft-blush text-heart-pink">
+            <HeartMark size={16} />
+          </span>
+          <h2 className="text-base font-bold">Settings</h2>
+          <button
+            type="button"
+            onClick={onBack}
+            className="ml-auto rounded-xl border border-border px-4 py-2 text-sm font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+          >
+            Back
+          </button>
+        </header>
+
+        <div className="flex-1 space-y-6 px-6 py-8">
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">Install on Android</h2>
+            <p className="mb-4 text-base">
+              Install HonDen on your phone, so it's always there when you need it.
+            </p>
+            {!installHandled &&
+              (!installPrompt || showInstallHelp ? (
+                <p className="rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
+                  To install: open HonDen in Chrome on your phone, tap the three dots,
+                  then Add to Home Screen.
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void installHonDen()}
+                  className="w-full rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                >
+                  Install HonDen
+                </button>
+              ))}
+            <p className={`mt-3 ${noteText}`}>
+              Installs from Chrome, no download needed.
+            </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">Privacy</h2>
+            <p className="mb-4 text-base">Messages are encrypted end-to-end.</p>
+
+            <div className="flex items-center justify-between gap-4 border-t border-border py-4">
+              <div>
+                <p className="font-bold">Read receipts</p>
+                <p className={noteText}>
+                  They'll see when you've read a message. You can turn this on.
+                </p>
+              </div>
+              <Toggle
+                label="Read receipts"
+                checked={settings.readReceipts}
+                onChange={(next) => update('readReceipts', next)}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="flex w-full items-center justify-between gap-4 border-t border-border py-4 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              <span>
+                <span className="block font-bold">Delete for everyone</span>
+                <span className={`block ${noteText}`}>
+                  You can delete a message for everyone, anytime.
+                </span>
+              </span>
+            </button>
+
+            <div className="flex items-center justify-between gap-4 border-t border-border py-4">
+              <div>
+                <p className="font-bold">Export your chats</p>
+                <p className={noteText}>Download a copy of your chats anytime.</p>
+              </div>
+            </div>
+
+            <p className="mt-4 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
+              No ads. No tracking. No selling your data.
+            </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">Connection</h2>
+            <p className="mb-4 text-base">
+              Open HonDen in another tab to sync instantly.
+            </p>
+            <p className={`mb-4 ${noteText}`}>
+              {peerCount > 0
+                ? 'A peer is listening.'
+                : 'No other HonDen window is listening yet.'}
+            </p>
+
+            <div className="flex items-center justify-between gap-4 border-t border-border py-4">
+              <div>
+                <p className="font-bold">Simulated replies</p>
+                <p className={noteText}>A gentle reply when no peer is here.</p>
+              </div>
+              <Toggle
+                label="Simulated replies"
+                checked={settings.simulateReplies}
+                onChange={(next) => update('simulateReplies', next)}
+              />
+            </div>
+
+            <div className="border-t border-border py-4">
+              <p className="font-bold">WebSocket relay</p>
+              <p className={`mb-3 ${noteText}`}>
+                Optional. Only encrypted messages are sent.
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="text"
+                  value={relayDraft}
+                  onChange={(event) => setRelayDraft(event.target.value)}
+                  aria-label="WebSocket relay URL"
+                  placeholder="ws://..."
+                  className="min-w-0 flex-1 rounded-xl border border-border bg-white px-4 py-2 text-base text-warm-charcoal placeholder:text-soft-grey focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                />
+                <button
+                  type="button"
+                  onClick={() => update('relayUrl', relayDraft.trim())}
+                  className="rounded-xl bg-heart-pink px-4 py-2 text-sm font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                >
+                  Connect
+                </button>
+                {settings.relayUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => update('relayUrl', '')}
+                    className="rounded-xl border border-border px-4 py-2 text-sm font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                  >
+                    Disconnect
+                  </button>
+                )}
+              </div>
+              <p className={`mt-2 ${noteText}`}>Relay: {relayState}</p>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">
+              Invite a friend
+            </h2>
+            <p className={`mb-4 ${noteText}`}>
+              Send this link to someone you trust. Only people with the link can
+              read your messages — we can't.
+            </p>
+            <input
+              type="text"
+              readOnly
+              value={inviteLink}
+              aria-label="Invite link"
+              onFocus={(event) => event.currentTarget.select()}
+              className="mb-3 w-full rounded-xl border border-border bg-white px-4 py-2 text-sm text-warm-charcoal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => void copyInvite()}
+                className="rounded-xl bg-heart-pink px-4 py-2 text-sm font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                {copied ? 'Copied' : 'Copy invite link'}
+              </button>
+              <button
+                type="button"
+                onClick={onNewInvite}
+                className="rounded-xl border border-border px-4 py-2 text-sm font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                Make a new link
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">
+              Notifications
+            </h2>
+            <div className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="font-bold">Gentle notifications</p>
+                <p className={noteText}>You have a message from Alex</p>
+              </div>
+              <Toggle
+                label="Gentle notifications"
+                checked={settings.gentleNotifications}
+                onChange={(next) => update('gentleNotifications', next)}
+              />
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">
+              Accessibility
+            </h2>
+            <div className="flex items-center justify-between gap-4 py-2">
+              <p className="font-bold">Large text</p>
+              <Toggle
+                label="Large text"
+                checked={settings.largeText}
+                onChange={(next) => update('largeText', next)}
+              />
+            </div>
+          </section>
+        </div>
+
+        <footer className="border-t border-border px-6 py-6 text-center">
+          <p className="font-bold">Made with care by HonDen</p>
+          <p className={`mt-1 ${noteText}`}>
+            Questions? We actually read our messages.{' '}
+            <button
+              type="button"
+              className="text-deep-rose underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              Contact us
+            </button>
+          </p>
+        </footer>
+      </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-warm-charcoal/30 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-title"
+            className="w-full max-w-sm rounded-2xl border border-border bg-white p-6 shadow-soft"
+          >
+            <h2 id="delete-title" className="mb-3 text-xl font-bold">
+              Delete this message?
+            </h2>
+            <p className="mb-6 text-base text-soft-grey">
+              This will delete it for everyone in this chat. This can't be
+              undone.
+            </p>
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="w-full rounded-xl bg-soft-red px-6 py-3 text-base font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                Delete for everyone
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="w-full rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                Keep it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  )
+}

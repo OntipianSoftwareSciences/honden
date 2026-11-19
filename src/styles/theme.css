@@ -1,0 +1,19 @@
+:root {
+  --heart-pink: #FF6B9D;
+  --deep-rose: #D94F7A;
+  --warm-cream: #FFF7F2;
+  --soft-blush: #FFE9F0;
+  --warm-charcoal: #2B2330;
+  --soft-grey: #6B6470;
+  --leaf-green: #2FA37C;
+  --warm-amber: #F2A93B;
+  --soft-red: #E5484D;
+  --white: #FFFFFF;
+  --border: #F0DDE6;
+  --hm-shadow: 0 2px 12px rgba(43, 35, 48, 0.06);
+  --text-scale: 1;
+}
+
+html[data-large-text='true'] {
+  --text-scale: 1.2;
+}

@@ -1,0 +1,291 @@
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express from 'express';
+import { WebSocket, WebSocketServer } from 'ws';
+const here = dirname(fileURLToPath(import.meta.url));
+// free tier, local JSON only
+const dataDir = join(here, 'data');
+const dataFile = join(dataDir, 'messages.json');
+const usersFile = join(dataDir, 'users.json');
+const downloadsDir = join(here, 'downloads');
+const apkFile = join(downloadsDir, 'honden.apk');
+mkdirSync(dataDir, { recursive: true });
+mkdirSync(downloadsDir, { recursive: true });
+const errorCopy = 'Something went wrong on our side. Nothing was sent. Try again in a moment.';
+const accountError = "We couldn't find @thatname. Check the spelling and try again.";
+const takenError = 'That @username is already taken. Try another one.';
+const mismatchError = "Those passwords don't match. Try again.";
+const recoveryError = "That recovery code doesn't match. Check it and try again.";
+const rateLimitError = 'Too many tries. Wait a minute and try again.';
+const recoveryNotice = 'Your recovery code is still the same. Keep it safe.';
+function isMessage(value) {
+    if (!value || typeof value !== 'object')
+        return false;
+    const item = value;
+    return (typeof item.id === 'string' &&
+        typeof item.chatId === 'string' &&
+        typeof item.sender === 'string' &&
+        typeof item.text === 'string' &&
+        typeof item.time === 'string');
+}
+let messages = [];
+if (existsSync(dataFile)) {
+    try {
+        const parsed = JSON.parse(readFileSync(dataFile, 'utf8'));
+        if (Array.isArray(parsed))
+            messages = parsed.filter(isMessage);
+    }
+    catch {
+        messages = [];
+    }
+}
+let users = [];
+if (existsSync(usersFile)) {
+    try {
+        const parsed = JSON.parse(readFileSync(usersFile, 'utf8'));
+        if (Array.isArray(parsed))
+            users = parsed.filter((item) => {
+                const user = item;
+                return (typeof user.username === 'string' &&
+                    typeof user.salt === 'string' &&
+                    typeof user.passwordHash === 'string');
+            });
+    }
+    catch {
+        users = [];
+    }
+}
+function persist() {
+    writeFileSync(dataFile, JSON.stringify(messages, null, 2));
+}
+function persistUsers() {
+    writeFileSync(usersFile, JSON.stringify(users, null, 2));
+}
+function cleanUsername(value) {
+    if (typeof value !== 'string')
+        return null;
+    const name = value.trim().replace(/^@/, '').toLowerCase();
+    return /^[a-z0-9_]{2,24}$/.test(name) ? name : null;
+}
+function hashPassword(password, salt) {
+    return scryptSync(password, salt, 64).toString('hex');
+}
+function verifyHash(value, salt, hash) {
+    const expected = Buffer.from(hash, 'hex');
+    const actual = Buffer.from(hashPassword(value, salt), 'hex');
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+function recoveryGroup() {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    return Array.from(randomBytes(4), (byte) => alphabet[byte % alphabet.length]).join('');
+}
+function newRecoveryCode() {
+    let code = '';
+    do {
+        code = `honey-${recoveryGroup()}-${recoveryGroup()}`;
+    } while (users.some((user) => user.recoveryHash && user.recoverySalt
+        ? verifyHash(code, user.recoverySalt, user.recoveryHash)
+        : false));
+    return code;
+}
+const app = express();
+app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+});
+app.use(express.json());
+app.post('/api/accounts', (req, res) => {
+    const username = cleanUsername(req.body?.username);
+    const password = req.body?.password;
+    if (!username || typeof password !== 'string' || !password) {
+        res.status(400).json({ error: accountError });
+        return;
+    }
+    if (users.some((user) => user.username === username)) {
+        res.status(409).json({ error: takenError });
+        return;
+    }
+    const salt = randomBytes(16).toString('hex');
+    const recoveryCode = newRecoveryCode();
+    const recoverySalt = randomBytes(16).toString('hex');
+    users.push({
+        username,
+        salt,
+        passwordHash: hashPassword(password, salt),
+        publicJwk: null,
+        recoverySalt,
+        recoveryHash: hashPassword(recoveryCode, recoverySalt),
+        recoveryAttempts: 0,
+        recoveryLockedUntil: 0,
+    });
+    persistUsers();
+    res.status(201).json({ username, recoveryCode });
+});
+app.post('/api/login', (req, res) => {
+    const username = cleanUsername(req.body?.username);
+    const password = req.body?.password;
+    const user = users.find((item) => item.username === username);
+    const expected = user ? Buffer.from(user.passwordHash, 'hex') : Buffer.alloc(0);
+    const actual = user && typeof password === 'string'
+        ? Buffer.from(hashPassword(password, user.salt), 'hex')
+        : Buffer.alloc(0);
+    if (!user || expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+        res.status(401).json({ error: accountError });
+        return;
+    }
+    res.json({ username: user.username });
+});
+app.post('/api/reset', (req, res) => {
+    const body = req.body;
+    const username = cleanUsername(body.username);
+    const user = users.find((item) => item.username === username);
+    if (!user) {
+        res.status(401).json({ error: accountError });
+        return;
+    }
+    if (typeof body.newPassword !== 'string' || !body.newPassword) {
+        res.status(400).json({ error: accountError });
+        return;
+    }
+    if (body.newPassword !== body.confirmPassword) {
+        res.status(400).json({ error: mismatchError });
+        return;
+    }
+    if (!user.recoveryHash || !user.recoverySalt) {
+        res.status(403).json({ error: recoveryError });
+        return;
+    }
+    if (user.recoveryLockedUntil && Date.now() < user.recoveryLockedUntil) {
+        res.status(429).json({ error: rateLimitError });
+        return;
+    }
+    const code = typeof body.recoveryCode === 'string'
+        ? body.recoveryCode.trim().toLowerCase().replace(/\s+/g, '')
+        : '';
+    if (!verifyHash(code, user.recoverySalt, user.recoveryHash)) {
+        const attempts = (user.recoveryAttempts ?? 0) + 1;
+        user.recoveryAttempts = attempts;
+        if (attempts >= 3) {
+            user.recoveryLockedUntil = Date.now() + 60_000;
+            user.recoveryAttempts = 0;
+            res.status(429).json({ error: rateLimitError });
+        }
+        else {
+            res.status(403).json({ error: recoveryError });
+        }
+        persistUsers();
+        return;
+    }
+    user.recoveryAttempts = 0;
+    user.recoveryLockedUntil = 0;
+    const salt = randomBytes(16).toString('hex');
+    user.salt = salt;
+    user.passwordHash = hashPassword(body.newPassword, salt);
+    persistUsers();
+    res.json({ username: user.username, notice: recoveryNotice });
+});
+app.get('/api/public-key', (req, res) => {
+    const username = cleanUsername(req.query.username);
+    const user = users.find((item) => item.username === username);
+    if (!user?.publicJwk) {
+        res.status(404).json({ error: accountError });
+        return;
+    }
+    res.json({ username: user.username, publicJwk: user.publicJwk });
+});
+app.post('/api/public-key', (req, res) => {
+    const username = cleanUsername(req.body?.username);
+    const publicJwk = req.body?.publicJwk;
+    const user = users.find((item) => item.username === username);
+    if (!user || !publicJwk || typeof publicJwk !== 'object' || Array.isArray(publicJwk)) {
+        res.status(400).json({ error: accountError });
+        return;
+    }
+    user.publicJwk = publicJwk;
+    persistUsers();
+    res.json({ ok: true });
+});
+app.get('/downloads/honden.apk', (_req, res) => {
+    if (!existsSync(apkFile)) {
+        console.info('HonDen APK requested but not present:', apkFile);
+        res.status(404).json({ error: 'The Android app is being prepared. Check back in a moment.' });
+        return;
+    }
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="honden.apk"');
+    res.sendFile(apkFile);
+});
+app.get('/health', (_req, res) => {
+    res.json({ ok: true });
+});
+app.get('/api/messages', (req, res) => {
+    const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : 'alex';
+    res.json(messages
+        .filter((message) => message.chatId === chatId)
+        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()));
+});
+app.post('/api/messages', (req, res) => {
+    const body = req.body;
+    if (!body ||
+        typeof body.chatId !== 'string' ||
+        typeof body.sender !== 'string' ||
+        typeof body.text !== 'string' ||
+        !body.text.trim()) {
+        res.status(400).json({ error: errorCopy });
+        return;
+    }
+    const message = {
+        id: typeof body.id === 'string' && body.id ? body.id : randomUUID(),
+        chatId: body.chatId,
+        sender: body.sender,
+        text: body.text.trim(),
+        time: new Date().toISOString(),
+    };
+    messages.push(message);
+    persist();
+    broadcast({ type: 'message', message });
+    res.status(201).json(message);
+});
+app.delete('/api/messages/:id', (req, res) => {
+    const next = messages.filter((message) => message.id !== req.params.id);
+    if (next.length === messages.length) {
+        res.status(404).json({ error: errorCopy });
+        return;
+    }
+    messages = next;
+    persist();
+    broadcast({ type: 'delete', id: req.params.id });
+    res.status(204).end();
+});
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
+wss.on('connection', (socket) => {
+    socket.on('message', (raw) => {
+        try {
+            const frame = JSON.parse(raw.toString());
+            if (typeof frame.type === 'string' && frame.type.startsWith('call:')) {
+                broadcast(frame);
+            }
+        }
+        catch {
+            return;
+        }
+    });
+});
+function broadcast(frame) {
+    const payload = JSON.stringify(frame);
+    for (const client of wss.clients) {
+        if (client.readyState === WebSocket.OPEN)
+            client.send(payload);
+    }
+}
+const port = Number(process.env.PORT ?? 3000);
+const host = process.env.HOST ?? '0.0.0.0';
+server.listen(port, host, () => {
+    console.log(`HonDen server listening on http://${host}:${port}`);
+});

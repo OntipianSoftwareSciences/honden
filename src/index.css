@@ -1,0 +1,255 @@
+@import "tailwindcss";
+@import "./styles/theme.css";
+
+@theme inline {
+  --color-heart-pink: var(--heart-pink);
+  --color-deep-rose: var(--deep-rose);
+  --color-warm-cream: var(--warm-cream);
+  --color-soft-blush: var(--soft-blush);
+  --color-warm-charcoal: var(--warm-charcoal);
+  --color-soft-grey: var(--soft-grey);
+  --color-leaf-green: var(--leaf-green);
+  --color-warm-amber: var(--warm-amber);
+  --color-soft-red: var(--soft-red);
+  --color-white: var(--white);
+  --color-border: var(--border);
+  --shadow-soft: var(--hm-shadow);
+}
+
+@layer base {
+  html {
+    font-size: calc(16px * var(--text-scale));
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background-color: var(--warm-cream);
+    color: var(--warm-charcoal);
+    font-family: "Segoe UI", Inter, system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #root {
+    min-height: 100dvh;
+  }
+
+  button,
+  [role='button'],
+  a {
+    touch-action: manipulation;
+  }
+
+  button {
+    cursor: pointer;
+    min-height: 44px;
+    transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease,
+      border-color 160ms ease;
+  }
+
+  @media (max-width: 767px) {
+    button {
+      min-height: 48px;
+    }
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+    box-shadow: 0 0 0 3px rgba(255, 107, 157, 0.18);
+  }
+}
+
+@layer utilities {
+  .screen-fade {
+    animation: screen-in 150ms ease-out both;
+  }
+
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scroll-behavior: smooth;
+    touch-action: pan-y;
+  }
+
+  .bubble-pressed {
+    animation: bubble-tap 200ms ease-out;
+  }
+
+  .message-in {
+    animation: message-in 180ms ease-out both;
+  }
+
+  .heart-pulse {
+    animation: heart-beat 2.4s ease-in-out infinite;
+    transform-origin: center;
+  }
+
+  .typing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .typing-indicator span {
+    width: 7px;
+    height: 7px;
+    border-radius: 9999px;
+    background-color: var(--heart-pink);
+    animation: typing-bounce 900ms ease-in-out infinite;
+  }
+
+  .typing-indicator span:nth-child(2) {
+    animation-delay: 120ms;
+  }
+
+  .typing-indicator span:nth-child(3) {
+    animation-delay: 240ms;
+  }
+
+  .heart-burst {
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .heart-particle {
+    position: absolute;
+    color: var(--heart-pink);
+    opacity: 0;
+    animation: heart-float 2s ease-out forwards;
+  }
+
+  .heart-particle:nth-child(1) {
+    --drift: -20px;
+    animation-delay: 0ms;
+  }
+
+  .heart-particle:nth-child(2) {
+    --drift: 8px;
+    animation-delay: 160ms;
+  }
+
+  .heart-particle:nth-child(3) {
+    --drift: -6px;
+    animation-delay: 320ms;
+  }
+
+  .heart-particle:nth-child(4) {
+    --drift: 22px;
+    animation-delay: 480ms;
+  }
+
+  .heart-particle:nth-child(5) {
+    --drift: -14px;
+    animation-delay: 640ms;
+  }
+
+  .heather-note {
+    animation: heather-note 1.8s ease-out forwards;
+  }
+}
+
+@keyframes bubble-tap {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.97);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes heart-beat {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.06);
+  }
+  55% {
+    transform: scale(1);
+  }
+  65% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes typing-bounce {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes heart-float {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.7);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--drift)), -56px) scale(1);
+  }
+}
+
+@keyframes heather-note {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  12%,
+  75% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}
