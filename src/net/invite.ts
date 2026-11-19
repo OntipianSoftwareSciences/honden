@@ -7,7 +7,6 @@ export type Invite = {
 }
 
 const STORAGE_KEY = 'honden.invite.v1'
-const DEFAULT_RELAY = sameOriginWs('/ws')
 const KEY_BYTES = 32
 
 function encode(bytes: Uint8Array): string {
@@ -112,7 +111,7 @@ export function inviteUrl(invite: Invite): string {
 
 export function relayUrl(invite: Invite, configured: string): string {
   const custom = configured.trim()
-  const base = custom.startsWith('/') ? sameOriginWs(custom) : DEFAULT_RELAY
+  const base = sameOriginWs(custom.startsWith('/') ? custom : '/ws')
   try {
     const url = new URL(base)
     url.searchParams.set('room', invite.room)

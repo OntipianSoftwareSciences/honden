@@ -271,13 +271,30 @@ export default function App() {
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [devices, setDevices] = useState<DeviceSession[]>(loadDevices)
   const [modal, setModal] = useState<'profile' | 'security' | null>(null)
-  const [offline, setOffline] = useState(!navigator.onLine)
+  const [offline, setOffline] = useState(false)
+  const offlineTimer = useRef<number | undefined>(undefined)
   const [retry, setRetry] = useState(0)
   const [longPressedId, setLongPressedId] = useState('')
   const longPressTimer = useRef<number | undefined>(undefined)
   const longPressClearTimer = useRef<number | undefined>(undefined)
   const messageBounce = useTouchBounce()
   const installPrompt = useInstallPrompt()
+
+  function scheduleOffline() {
+    if (offlineTimer.current !== undefined) return
+    offlineTimer.current = window.setTimeout(() => {
+      offlineTimer.current = undefined
+      setOffline(true)
+    }, 3000)
+  }
+
+  function clearOffline() {
+    if (offlineTimer.current !== undefined) {
+      window.clearTimeout(offlineTimer.current)
+      offlineTimer.current = undefined
+    }
+    setOffline(false)
+  }
 
   useEffect(() => {
     const node = messageBounce.ref.current
@@ -316,16 +333,24 @@ export default function App() {
 
   useEffect(() => {
     const goOnline = () => {
-      setOffline(false)
+      clearOffline()
       setRetry((value) => value + 1)
     }
-    const goOffline = () => setOffline(true)
     window.addEventListener('online', goOnline)
-    window.addEventListener('offline', goOffline)
+    window.addEventListener('offline', scheduleOffline)
     return () => {
       window.removeEventListener('online', goOnline)
-      window.removeEventListener('offline', goOffline)
+      window.removeEventListener('offline', scheduleOffline)
+      if (offlineTimer.current !== undefined) window.clearTimeout(offlineTimer.current)
     }
+  }, [])
+
+  useEffect(() => {
+    void fetch('/api/messages?chatId=health')
+      .then((response) => {
+        if (response.ok) clearOffline()
+      })
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => subscribeChannel(() => setStatus(getChannelStatus())), [])
@@ -339,7 +364,7 @@ export default function App() {
     void fetch(`/api/messages?chatId=${encodeURIComponent(activeThreadId)}`)
       .then((response) => {
         if (!response.ok) throw new Error('offline')
-        setOffline(false)
+        clearOffline()
         return response.json()
       })
       .then(async (items: WireMessage[]) => {
@@ -351,7 +376,7 @@ export default function App() {
         )
       })
       .catch(() => {
-        setOffline(true)
+        scheduleOffline()
         setMessages((current) => mergeChatMessages(current, cached))
       })
   }, [screen, activeThreadId, retry, identity])
@@ -442,16 +467,10 @@ export default function App() {
   }, [activeRelayUrl])
 
   async function sendMessage(threadId: string, text: string, gifUrl?: string) {
-    if (!identity) {
-      setOffline(true)
-      return
-    }
+    if (!identity) return
     const plain = gifUrl ?? text
     const key = await sharedKey(identity, threadId)
-    if (!key) {
-      setOffline(true)
-      return
-    }
+    if (!key) return
     const payload = await encryptText(plain, key)
     const outgoing: WireMessage = {
       id: randomId(),
@@ -467,10 +486,10 @@ export default function App() {
         body: JSON.stringify(outgoing),
       })
       if (!response.ok) {
-        setOffline(true)
+        scheduleOffline()
         return
       }
-      setOffline(false)
+      clearOffline()
       const timestamp = Date.now()
       setMessages((current) =>
         mergeChatMessages(current, [
@@ -486,7 +505,7 @@ export default function App() {
         ]),
       )
     } catch {
-      setOffline(true)
+      scheduleOffline()
       return
     }
   }
