@@ -33,14 +33,18 @@ import type { ChannelStatus } from './transport/channel'
 import {
   formatTime,
   loadChatBackup,
+  loadOutbox,
   loadThreads,
   mergeChatMessages,
   normalizeUsername,
+  removeOutbox,
   saveChatBackup,
   saveThreads,
   subscribeStore,
+  updateOutboxStatus,
+  upsertOutbox,
 } from './store/messages'
-import type { Thread } from './store/messages'
+import type { OutboxMessage, Thread } from './store/messages'
 import {
   connectSignals,
   getSignalToken,
@@ -143,6 +147,22 @@ async function lookupAccount(username: string): Promise<string | null> {
     return typeof data.username === 'string' ? normalizeUsername(data.username) || null : null
   } catch {
     return null
+  }
+}
+
+function outboxToChatMessage(item: OutboxMessage): ChatMessage {
+  const timestamp = new Date(item.time).getTime()
+  return {
+    id: item.id,
+    threadId: item.threadId,
+    senderId: `@${item.sender}`,
+    from: 'me',
+    time: formatTime(timestamp),
+    timestamp,
+    text: item.plain,
+    kind: item.kind ?? 'text',
+    gifUrl: item.gifUrl,
+    status: item.status,
   }
 }
 
@@ -277,10 +297,12 @@ export default function App() {
   const [call, setCall] = useState<CallSnapshot>(() => callManager.snapshot())
   const [draft, setDraft] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
-  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const composerRef = useRef<HTMLInputElement>(null)
+  const flushingOutbox = useRef(false)
   const [user, setUser] = useState<AccountUser>(loadAccount)
   const [username, setUsername] = useState(ownUsername)
   const [identity, setIdentity] = useState<Identity | null>(null)
+  const identityRef = useRef<Identity | null>(null)
   const [devices, setDevices] = useState<DeviceSession[]>(loadDevices)
   const [modal, setModal] = useState<'profile' | 'security' | null>(null)
   const [offline, setOffline] = useState(false)
@@ -341,13 +363,24 @@ export default function App() {
   }, [devices])
 
   useEffect(() => {
+    identityRef.current = identity
+  }, [identity])
+
+  useEffect(() => {
     saveChatBackup(messages)
   }, [messages])
+
+  useEffect(() => {
+    const queued = loadOutbox().map(outboxToChatMessage)
+    if (queued.length > 0) setMessages((current) => mergeChatMessages(current, queued))
+    void flushOutbox()
+  }, [])
 
   useEffect(() => {
     const goOnline = () => {
       clearOffline()
       setRetry((value) => value + 1)
+      void flushOutbox()
     }
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', scheduleOffline)
@@ -479,51 +512,109 @@ export default function App() {
     return () => disconnectRelay()
   }, [activeRelayUrl])
 
-  async function sendMessage(threadId: string, text: string, gifUrl?: string) {
-    if (!identity) return
-    const plain = gifUrl ?? text
-    const key = await sharedKey(identity, threadId)
-    if (!key) return
-    const payload = await encryptText(plain, key)
-    const outgoing: WireMessage = {
-      id: randomId(),
-      chatId: threadId,
-      sender: ownUsername,
-      text: JSON.stringify(payload),
-      time: new Date().toISOString(),
+  async function encryptedWireText(item: OutboxMessage): Promise<string> {
+    if (item.text !== item.plain) return item.text
+    const current = identityRef.current ?? (await loadIdentity(item.sender).catch(() => null))
+    if (!current) return item.text
+    identityRef.current = current
+    const key = await sharedKey(current, item.threadId)
+    if (!key) return item.text
+    return JSON.stringify(await encryptText(item.plain, key))
+  }
+
+  async function deliverMessage(queued: OutboxMessage): Promise<boolean> {
+    let item = queued
+    const text = await encryptedWireText(item)
+    if (text !== item.text) {
+      item = { ...item, text }
+      upsertOutbox(item)
     }
     try {
-      const response = await fetch(`/api/messages`, {
+      const response = await fetch('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(outgoing),
+        body: JSON.stringify({
+          id: item.id,
+          chatId: item.threadId,
+          sender: item.sender,
+          text: item.text,
+          time: item.time,
+        }),
       })
       if (!response.ok) {
+        updateOutboxStatus(item.id, 'failed')
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === item.id ? { ...message, status: 'failed' } : message,
+          ),
+        )
         scheduleOffline()
-        return
+        return false
       }
-      clearOffline()
-      const timestamp = Date.now()
+      removeOutbox(item.id)
       setMessages((current) =>
-        mergeChatMessages(current, [
-          {
-            id: outgoing.id,
-            threadId,
-            senderId: `@${ownUsername}`,
-            from: 'me',
-            time: formatTime(timestamp),
-            timestamp,
-            text: plain,
-          },
-        ]),
+        current.map((message) =>
+          message.id === item.id ? { ...message, status: 'sent' } : message,
+        ),
       )
+      clearOffline()
+      return true
     } catch {
+      updateOutboxStatus(item.id, 'sending')
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === item.id ? { ...message, status: 'sending' } : message,
+        ),
+      )
       scheduleOffline()
-      return
+      return false
     }
   }
 
+  async function flushOutbox() {
+    if (flushingOutbox.current) return
+    flushingOutbox.current = true
+    try {
+      const items = loadOutbox().filter((item) => item.status === 'sending')
+      for (const item of items) await deliverMessage(item)
+    } finally {
+      flushingOutbox.current = false
+    }
+  }
+
+  async function retryMessage(id: string) {
+    const item = loadOutbox().find((entry) => entry.id === id)
+    if (!item) return
+    updateOutboxStatus(id, 'sending')
+    setMessages((current) =>
+      current.map((message) => (message.id === id ? { ...message, status: 'sending' } : message)),
+    )
+    await deliverMessage({ ...item, status: 'sending' })
+  }
+
+  async function sendMessage(threadId: string, text: string, gifUrl?: string) {
+    const plain = (gifUrl ?? text).trim()
+    if (!plain) return
+    const id = randomId()
+    const time = new Date().toISOString()
+    const item: OutboxMessage = {
+      id,
+      threadId,
+      sender: ownUsername,
+      text: plain,
+      plain,
+      time,
+      status: 'sending',
+      kind: gifUrl ? 'gif' : 'text',
+      gifUrl,
+    }
+    upsertOutbox(item)
+    setMessages((current) => mergeChatMessages(current, [outboxToChatMessage(item)]))
+    await deliverMessage(item)
+  }
+
   async function deleteMessage(id: string, threadId: string) {
+    removeOutbox(id)
     setMessages((current) => current.filter((item) => item.id !== id))
     try {
       await fetch(
@@ -848,6 +939,18 @@ export default function App() {
                       Delete
                     </button>
                   </div>
+                  {message.status === 'sending' && (
+                    <p className="mt-1 text-[13px] text-soft-grey">Sending...</p>
+                  )}
+                  {message.status === 'failed' && (
+                    <button
+                      type="button"
+                      onClick={() => void retryMessage(message.id)}
+                      className="mt-1 min-h-11 text-left text-[13px] text-soft-red underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                    >
+                      This message didn't send. Tap to try again.
+                    </button>
+                  )}
                   {settings.readReceipts && message.from === 'me' && (
                     <span className="text-[13px] text-soft-grey">✓✓</span>
                   )}
@@ -877,7 +980,7 @@ export default function App() {
             ))}
           </div>
 
-          <div className="relative shrink-0 border-t border-border bg-white p-4">
+          <div className="relative z-20 shrink-0 border-t border-border bg-white p-4">
             {pickerOpen && (
               <MediaPicker
                 onEmoji={insertEmoji}
@@ -903,19 +1006,25 @@ export default function App() {
               </div>
             )}
             <div className="flex items-end gap-2">
-              <textarea
+              <input
                 ref={composerRef}
-                rows={2}
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="sentences"
+                enterKeyHint="send"
+                aria-label="Message"
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
+                  if (event.key === 'Enter') {
                     event.preventDefault()
                     submitDraft()
                   }
                 }}
                 placeholder="Message…"
-                className="min-h-12 flex-1 resize-none rounded-2xl border border-border bg-white px-3 py-2 text-base text-warm-charcoal outline-none placeholder:text-soft-grey focus:border-heart-pink"
+                className="touch-auto min-h-12 flex-1 rounded-2xl border border-border bg-white px-3 py-2 text-base text-warm-charcoal outline-none placeholder:text-soft-grey focus:border-heart-pink"
               />
               <button
                 type="button"

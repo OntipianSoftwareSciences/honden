@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,7 @@ if (existsSync(dataFile)) {
     messages = []
   }
 }
+console.log(`Loaded ${messages.length} messages from messages.json`)
 
 let users: StoredUser[] = []
 if (existsSync(usersFile)) {
@@ -92,12 +93,18 @@ if (existsSync(usersFile)) {
 }
 console.log(`Loaded ${users.length} users from users.json`)
 
+function writeJson(file: string, value: unknown): void {
+  const temp = `${file}.tmp`
+  writeFileSync(temp, JSON.stringify(value, null, 2))
+  renameSync(temp, file)
+}
+
 function persist() {
-  writeFileSync(dataFile, JSON.stringify(messages, null, 2))
+  writeJson(dataFile, messages)
 }
 
 function persistUsers() {
-  writeFileSync(usersFile, JSON.stringify(users, null, 2))
+  writeJson(usersFile, users)
 }
 
 function hashPassword(password: string, salt: string): string {

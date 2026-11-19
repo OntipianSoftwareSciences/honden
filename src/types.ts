@@ -12,6 +12,7 @@ export type ChatMessage = {
   gifUrl?: string
   editedAt?: string | null
   deleted?: boolean
+  status?: 'sending' | 'sent' | 'failed'
 }
 
 export type GifResult = {

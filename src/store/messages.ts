@@ -1,5 +1,5 @@
 import type { EncryptedPayload } from '../crypto/e2ee'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, MessageKind } from '../types'
 
 export type StoredMessage = {
   id: string
@@ -12,6 +12,18 @@ export type StoredMessage = {
   text: string
 }
 
+export type OutboxMessage = {
+  id: string
+  threadId: string
+  sender: string
+  text: string
+  plain: string
+  time: string
+  status: 'sending' | 'failed'
+  kind?: MessageKind
+  gifUrl?: string
+}
+
 export type Thread = {
   id: string
   name: string
@@ -22,6 +34,7 @@ export type Thread = {
 const THREADS_KEY = 'honden.threads.v2'
 const MESSAGES_KEY = 'honden.messages.v1'
 const CHAT_BACKUP_KEY = 'honden.chatMessages.v1'
+const OUTBOX_KEY = 'honden.outbox.v1'
 
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -144,6 +157,51 @@ export function loadChatBackup(): ChatMessage[] {
 
 export function saveChatBackup(messages: ChatMessage[]): void {
   localStorage.setItem(CHAT_BACKUP_KEY, JSON.stringify(messages))
+}
+
+export function loadOutbox(): OutboxMessage[] {
+  try {
+    const saved = localStorage.getItem(OUTBOX_KEY)
+    if (!saved) return []
+    const parsed: unknown = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is OutboxMessage =>
+        Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof (item as OutboxMessage).id === 'string' &&
+            typeof (item as OutboxMessage).threadId === 'string' &&
+            typeof (item as OutboxMessage).sender === 'string' &&
+            typeof (item as OutboxMessage).text === 'string' &&
+            typeof (item as OutboxMessage).plain === 'string' &&
+            typeof (item as OutboxMessage).time === 'string',
+        ),
+    )
+  } catch {
+    return []
+  }
+}
+
+export function saveOutbox(items: OutboxMessage[]): void {
+  localStorage.setItem(OUTBOX_KEY, JSON.stringify(items))
+}
+
+export function upsertOutbox(item: OutboxMessage): void {
+  const items = loadOutbox()
+  const index = items.findIndex((entry) => entry.id === item.id)
+  if (index >= 0) items[index] = item
+  else items.push(item)
+  saveOutbox(items)
+}
+
+export function updateOutboxStatus(id: string, status: OutboxMessage['status']): void {
+  const items = loadOutbox().map((item) => (item.id === id ? { ...item, status } : item))
+  saveOutbox(items)
+}
+
+export function removeOutbox(id: string): void {
+  saveOutbox(loadOutbox().filter((item) => item.id !== id))
 }
 
 export function mergeChatMessages(
