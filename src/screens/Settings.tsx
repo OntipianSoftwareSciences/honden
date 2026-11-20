@@ -261,6 +261,35 @@ export default function Settings({
           </section>
 
           <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-deep-rose">Sounds</h2>
+            <div className="flex items-center justify-between gap-4 py-2">
+              <div>
+                <p className="font-bold">Sounds</p>
+                <p className={noteText}>Short, quiet chiptune cues.</p>
+              </div>
+              <Toggle
+                label="Sounds"
+                checked={settings.sounds}
+                onChange={(next) => update('sounds', next)}
+              />
+            </div>
+            <label className="mt-3 block">
+              <span className="font-bold">Volume</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.soundVolume}
+                disabled={!settings.sounds}
+                onChange={(event) => update('soundVolume', Number(event.target.value))}
+                aria-label="Sound volume"
+                className="mt-2 w-full accent-heart-pink disabled:opacity-50"
+              />
+            </label>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
             <h2 className="mb-2 text-sm font-bold text-deep-rose">
               Accessibility
             </h2>

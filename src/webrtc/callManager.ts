@@ -27,6 +27,8 @@ type SignalingSender = (event: SignalEvent) => void
 
 const callErrorCopy =
   'Something went wrong on our side. Nothing was sent. Try again in a moment.'
+const mediaErrorCopy =
+  'Camera or microphone is blocked or already in use. Check browser permissions and try again.'
 
 const iceServers: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -71,6 +73,8 @@ class CallManager {
   private cameras: MediaDeviceInfo[] = []
   private cameraLabel = ''
   private cameraLabelTimer: number | undefined
+  private connectTimer: number | undefined
+  private pendingIce: RTCIceCandidateInit[] = []
   private error = ''
   private send: SignalingSender = () => undefined
   private listeners = new Set<(snapshot: CallSnapshot) => void>()
@@ -115,11 +119,59 @@ class CallManager {
     return `call-${Date.now()}-${Math.random().toString(36).slice(2)}`
   }
 
+  private startConnectTimer() {
+    if (this.connectTimer !== undefined) window.clearTimeout(this.connectTimer)
+    this.connectTimer = window.setTimeout(() => {
+      if (this.state === 'calling' || this.state === 'connecting') {
+        console.info('[call] connect timeout', { callId: this.callId })
+        this.fail("Couldn't connect, try again")
+      }
+    }, 15_000)
+  }
+
+  private markConnecting() {
+    this.state = 'connecting'
+    console.info('[call] connecting', { callId: this.callId })
+    this.emit()
+    this.startConnectTimer()
+  }
+
+  private markConnected() {
+    if (this.state === 'connected') return
+    if (this.connectTimer !== undefined) {
+      window.clearTimeout(this.connectTimer)
+      this.connectTimer = undefined
+    }
+    this.state = 'connected'
+    console.info('[call] connected', { callId: this.callId })
+    this.emit()
+  }
+
+  private async flushIce() {
+    const queued = this.pendingIce.splice(0)
+    for (const candidate of queued) {
+      if (!this.pc?.remoteDescription) {
+        this.pendingIce.push(candidate)
+        continue
+      }
+      try {
+        await this.pc.addIceCandidate(candidate)
+      } catch {
+        continue
+      }
+    }
+  }
+
   private teardown() {
     if (this.cameraLabelTimer !== undefined) {
       window.clearTimeout(this.cameraLabelTimer)
       this.cameraLabelTimer = undefined
     }
+    if (this.connectTimer !== undefined) {
+      window.clearTimeout(this.connectTimer)
+      this.connectTimer = undefined
+    }
+    this.pendingIce = []
     if (this.local) {
       for (const track of this.local.getTracks()) track.stop()
     }
@@ -185,13 +237,10 @@ class CallManager {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
-        this.state = 'connected'
-        this.emit()
+        this.markConnected()
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         if (this.state !== 'ended') {
-          this.state = 'ended'
-          this.error = callErrorCopy
-          this.emit()
+          this.fail("Couldn't connect, try again")
         }
       }
     }
@@ -201,10 +250,7 @@ class CallManager {
         pc.iceConnectionState === 'connected' ||
         pc.iceConnectionState === 'completed'
       ) {
-        if (this.state !== 'connected') {
-          this.state = 'connected'
-          this.emit()
-        }
+        this.markConnected()
       }
     }
 
@@ -220,7 +266,11 @@ class CallManager {
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
           }
         : { audio: true, video: false }
-    this.local = await navigator.mediaDevices.getUserMedia(constraints)
+    try {
+      this.local = await navigator.mediaDevices.getUserMedia(constraints)
+    } catch {
+      throw new Error(mediaErrorCopy)
+    }
     await this.refreshCameras()
     return this.local
   }
@@ -254,16 +304,23 @@ class CallManager {
       return
     }
 
+    console.info('[call] invite sent', { callId: this.callId, to: peerId, kind })
     this.send({
       type: 'call:invite',
       to: peerId,
       callId: this.callId,
       kind,
     })
+    this.startConnectTimer()
   }
 
   handleInvite(event: SignalEvent) {
     if (!event.from || !event.callId || !event.kind) return
+    console.info('[call] invite received', {
+      callId: event.callId,
+      from: event.from,
+      kind: event.kind,
+    })
     if (this.state !== 'idle') {
       this.send({ type: 'call:reject', to: event.from, callId: event.callId })
       return
@@ -279,8 +336,7 @@ class CallManager {
 
   async accept() {
     if (this.state !== 'incoming') return
-    this.state = 'connecting'
-    this.emit()
+    this.markConnecting()
 
     try {
       const stream = await this.ensureLocalStream()
@@ -291,8 +347,8 @@ class CallManager {
         to: this.peerId,
         callId: this.callId,
       })
-    } catch {
-      this.fail(callErrorCopy)
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : callErrorCopy)
     }
   }
 
@@ -314,8 +370,7 @@ class CallManager {
     if (event.from) this.peerId = event.from
     if (event.peerName) this.peerName = event.peerName
 
-    this.state = 'connecting'
-    this.emit()
+    this.markConnecting()
 
     try {
       const stream = await this.ensureLocalStream()
@@ -329,8 +384,8 @@ class CallManager {
         callId: this.callId,
         sdp: pc.localDescription ?? offer,
       })
-    } catch {
-      this.fail(callErrorCopy)
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : callErrorCopy)
     }
   }
 
@@ -343,16 +398,18 @@ class CallManager {
     try {
       const pc = this.ensurePeerConnection()
       await pc.setRemoteDescription(event.sdp)
+      await this.flushIce()
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
+      console.info('[call] answer sent', { callId: this.callId, to: this.peerId })
       this.send({
         type: 'call:answer',
         to: this.peerId,
         callId: this.callId,
         sdp: pc.localDescription ?? answer,
       })
-    } catch {
-      this.fail(callErrorCopy)
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : callErrorCopy)
     }
   }
 
@@ -361,9 +418,11 @@ class CallManager {
       return
     }
     try {
+      console.info('[call] answer received', { callId: this.callId, from: event.from })
       await this.pc?.setRemoteDescription(event.sdp)
-    } catch {
-      this.fail(callErrorCopy)
+      await this.flushIce()
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : callErrorCopy)
     }
   }
 
@@ -371,11 +430,19 @@ class CallManager {
     if (event.callId !== this.callId || !event.candidate) {
       return
     }
-    try {
-      await this.pc?.addIceCandidate(event.candidate)
-    } catch {
+    if (!this.pc?.remoteDescription) {
+      this.pendingIce.push(event.candidate)
       return
     }
+    try {
+      await this.pc.addIceCandidate(event.candidate)
+    } catch {
+      this.pendingIce.push(event.candidate)
+    }
+  }
+
+  handleReject(event: SignalEvent) {
+    this.handleHangup(event)
   }
 
   handleHangup(event: SignalEvent) {
@@ -503,9 +570,64 @@ class CallManager {
     this.emit()
   }
 
+  acceptFromPush(data: {
+    callId?: unknown
+    sender?: unknown
+    senderName?: unknown
+    kind?: unknown
+  }): boolean {
+    const callId = typeof data.callId === 'string' ? data.callId : ''
+    const sender =
+      typeof data.sender === 'string'
+        ? data.sender.trim().replace(/^@/, '').toLowerCase()
+        : ''
+    const kind: CallKind = data.kind === 'video' ? 'video' : 'voice'
+    if (!callId || !sender) return false
+    if (this.state === 'incoming' && this.callId === callId) {
+      void this.accept()
+      return true
+    }
+    if (this.state !== 'idle') return false
+    const peerName = typeof data.senderName === 'string' ? data.senderName : sender
+    this.handleInvite({
+      type: 'call:invite',
+      from: sender,
+      callId,
+      kind,
+      peerName,
+    } as SignalEvent)
+    const stateAfterInvite = this.snapshot().state
+    if (stateAfterInvite === 'incoming' && this.callId === callId) {
+      void this.accept()
+      return true
+    }
+    return false
+  }
+
   dispose() {
     this.reset()
   }
 }
 
 export const callManager = new CallManager()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', (event) => {
+    const data = event.data as {
+      type?: unknown
+      action?: unknown
+      callId?: unknown
+      sender?: unknown
+    } | null
+    if (data?.type !== 'honden:call-action') return
+    if (data.action === 'accept') {
+      callManager.acceptFromPush(data)
+    } else if (data.action === 'decline') {
+      callManager.handleReject({
+        type: 'call:reject',
+        callId: data.callId,
+        from: data.sender,
+      } as SignalEvent)
+    }
+  })
+}

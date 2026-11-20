@@ -36,7 +36,39 @@ const THREADS_KEY = 'honden.threads.v2'
 const MESSAGES_KEY = 'honden.messages.v1'
 const CHAT_BACKUP_KEY = 'honden.chatMessages.v1'
 const OUTBOX_KEY = 'honden.outbox.v1'
-const fakeThreadNames = new Set(['al' + 'ex', 'that' + 'name', 'some' + 'one'])
+const fakeThreadNames = new Set(['al' + 'ex', 'that' + 'name', 'some' + 'one', 'you'])
+let chatStorageUser = ''
+
+export function setChatStorageUser(username: string | null): void {
+  chatStorageUser = username ? normalizeUsername(username) : ''
+}
+
+function storageKey(base: string): string {
+  return chatStorageUser ? `${base}.${chatStorageUser}` : `${base}.session`
+}
+
+export function clearChatStorage(): void {
+  const prefixes = [
+    'honden.threads',
+    'honden.messages',
+    'honden.chatMessages',
+    'honden.outbox',
+    'honden.contacts',
+  ]
+  for (const name of Object.keys(localStorage)) {
+    if (
+      name === 'honden.global.blocked' ||
+      prefixes.some((prefix) => name === prefix || name.startsWith(`${prefix}.`))
+    ) {
+      localStorage.removeItem(name)
+    }
+  }
+}
+
+export function isRealThreadName(value: string): boolean {
+  const name = normalizeUsername(value)
+  return Boolean(name) && !fakeThreadNames.has(name)
+}
 
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -50,8 +82,9 @@ export function normalizeUsername(value: string): string {
 }
 
 export function loadThreads(): Thread[] {
+  if (!chatStorageUser) return []
   try {
-    const saved = localStorage.getItem(THREADS_KEY)
+    const saved = localStorage.getItem(storageKey(THREADS_KEY))
     if (!saved) return []
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) return []
@@ -66,10 +99,7 @@ export function loadThreads(): Thread[] {
         return false
       }
       const thread = item as Thread
-      return (
-        !fakeThreadNames.has(normalizeUsername(thread.username)) &&
-        !fakeThreadNames.has(normalizeUsername(thread.name))
-      )
+      return isRealThreadName(thread.username) && isRealThreadName(thread.name)
     })
   } catch {
     return []
@@ -77,7 +107,8 @@ export function loadThreads(): Thread[] {
 }
 
 export function saveThreads(threads: Thread[]): void {
-  localStorage.setItem(THREADS_KEY, JSON.stringify(threads))
+  if (!chatStorageUser) return
+  localStorage.setItem(storageKey(THREADS_KEY), JSON.stringify(threads))
 }
 
 export function createThread(name: string): Thread {
@@ -93,8 +124,9 @@ export function createThread(name: string): Thread {
 }
 
 export function loadMessages(): StoredMessage[] {
+  if (!chatStorageUser) return []
   try {
-    const saved = localStorage.getItem(MESSAGES_KEY)
+    const saved = localStorage.getItem(storageKey(MESSAGES_KEY))
     if (!saved) return []
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) return []
@@ -114,7 +146,8 @@ export function loadMessages(): StoredMessage[] {
 }
 
 export function saveMessages(messages: StoredMessage[]): void {
-  localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages))
+  if (!chatStorageUser) return
+  localStorage.setItem(storageKey(MESSAGES_KEY), JSON.stringify(messages))
 }
 
 export function appendMessage(message: StoredMessage): void {
@@ -142,8 +175,9 @@ export function messagesFor(threadId: string): StoredMessage[] {
 }
 
 export function loadChatBackup(): ChatMessage[] {
+  if (!chatStorageUser) return []
   try {
-    const saved = localStorage.getItem(CHAT_BACKUP_KEY)
+    const saved = localStorage.getItem(storageKey(CHAT_BACKUP_KEY))
     if (!saved) return []
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) return []
@@ -164,12 +198,14 @@ export function loadChatBackup(): ChatMessage[] {
 }
 
 export function saveChatBackup(messages: ChatMessage[]): void {
-  localStorage.setItem(CHAT_BACKUP_KEY, JSON.stringify(messages))
+  if (!chatStorageUser) return
+  localStorage.setItem(storageKey(CHAT_BACKUP_KEY), JSON.stringify(messages))
 }
 
 export function loadOutbox(): OutboxMessage[] {
+  if (!chatStorageUser) return []
   try {
-    const saved = localStorage.getItem(OUTBOX_KEY)
+    const saved = localStorage.getItem(storageKey(OUTBOX_KEY))
     if (!saved) return []
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) return []
@@ -192,7 +228,8 @@ export function loadOutbox(): OutboxMessage[] {
 }
 
 export function saveOutbox(items: OutboxMessage[]): void {
-  localStorage.setItem(OUTBOX_KEY, JSON.stringify(items))
+  if (!chatStorageUser) return
+  localStorage.setItem(storageKey(OUTBOX_KEY), JSON.stringify(items))
 }
 
 export function upsertOutbox(item: OutboxMessage): void {
@@ -222,11 +259,8 @@ export function mergeChatMessages(
 
 export function subscribeStore(listener: () => void): () => void {
   const handler = (event: StorageEvent) => {
-    if (
-      event.key === THREADS_KEY ||
-      event.key === MESSAGES_KEY ||
-      event.key === CHAT_BACKUP_KEY
-    ) {
+    const chatKeys = [THREADS_KEY, MESSAGES_KEY, CHAT_BACKUP_KEY]
+    if (chatKeys.some((key) => event.key === key || event.key?.startsWith(`${key}.`))) {
       listener()
     }
   }

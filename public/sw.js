@@ -34,6 +34,105 @@ self.addEventListener('activate', (event) => {
   )
 })
 
+self.addEventListener('push', (event) => {
+  let payload = {}
+  try {
+    payload = event.data ? event.data.json() : {}
+  } catch {
+    payload = {}
+  }
+  if (!payload) return
+
+  if (payload.type === 'message') {
+    const chatId = String(payload.chatId || '')
+    const sender = String(payload.sender || '').replace(/^@/, '')
+    const senderName = String(payload.senderName || sender || 'someone')
+    if (!chatId || !sender) return
+    const url = `/chats?chat=${encodeURIComponent(chatId)}&from=${encodeURIComponent(sender)}`
+    event.waitUntil(
+      self.registration.showNotification(`New message from @${sender}`, {
+        body: senderName,
+        tag: `honden-message-${chatId}`,
+        data: { type: 'message', chatId, sender, senderName, url },
+      }),
+    )
+    return
+  }
+
+  if (payload.type === 'incoming-call') {
+    const callId = String(payload.callId || '')
+    const sender = String(payload.sender || '').replace(/^@/, '')
+    const senderName = String(payload.senderName || sender || 'someone')
+    const kind = payload.kind === 'video' ? 'video' : 'voice'
+    if (!callId || !sender) return
+
+    const url = `/chats?callFrom=${encodeURIComponent(sender)}&callId=${encodeURIComponent(callId)}&callKind=${kind}`
+    event.waitUntil(
+      self.registration.showNotification(`Incoming call from @${sender}`, {
+        body: `${senderName} is ${kind} calling`,
+        tag: `honden-call-${callId}`,
+        renotify: true,
+        requireInteraction: true,
+        vibrate: [200, 100, 200, 100, 200],
+        actions: [
+          { action: 'accept', title: 'Accept' },
+          { action: 'decline', title: 'Decline' },
+        ],
+        data: { type: 'incoming-call', callId, sender, senderName, kind, url },
+      }),
+    )
+  }
+})
+
+self.addEventListener('notificationclick', (event) => {
+  const notification = event.notification
+  const data = notification.data || {}
+  notification.close()
+  if (data.type !== 'message' && data.type !== 'incoming-call') return
+
+  if (data.type === 'incoming-call' && event.action === 'decline') {
+    event.waitUntil(
+      fetch('/api/call-decline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: data.callId, to: data.sender }),
+      }).catch(() => undefined),
+    )
+    return
+  }
+
+  const url = new URL(data.url || '/chats', self.location.origin).href
+  const message =
+    data.type === 'incoming-call'
+      ? {
+          type: 'honden:call-action',
+          action: 'accept',
+          callId: data.callId,
+          sender: data.sender,
+          senderName: data.senderName,
+          kind: data.kind,
+        }
+      : null
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then(async (clients) => {
+        const existing = clients.find((client) => client.url.startsWith(self.location.origin))
+        if (existing) {
+          await existing.navigate(url)
+          existing.focus()
+          if (message) existing.postMessage(message)
+          return
+        }
+        const opened = await self.clients.openWindow(url)
+        if (opened && message) {
+          opened.postMessage(message)
+          setTimeout(() => opened.postMessage(message), 750)
+        }
+      }),
+  )
+})
+
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET') return

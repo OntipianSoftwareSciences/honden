@@ -32,9 +32,9 @@ test('origin allowlist permits same-origin clients', () => {
 })
 
 test('conversation access is sender or recipient scoped', () => {
-  assert.equal(canAccessConversation('mom', 'tau', 'tau', '#honey-den'), true)
-  assert.equal(canAccessConversation('mom', 'tau', 'sukar3tto', '#honey-den'), false)
-  assert.equal(canAccessConversation('mom', '#honey-den', 'sukar3tto', '#honey-den'), true)
+  assert.equal(canAccessConversation('mom', 'tau', 'tau'), true)
+  assert.equal(canAccessConversation('mom', 'tau', 'sukar3tto'), false)
+  assert.equal(canAccessConversation('mom', null, 'sukar3tto'), false)
 })
 
 test('server cursor advances forward only', () => {

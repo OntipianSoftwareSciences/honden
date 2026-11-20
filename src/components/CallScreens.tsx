@@ -1,6 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { Mic, MicOff, Phone, PhoneOff, SwitchCamera, Video, VideoOff } from 'lucide-react'
 import type { CallSnapshot } from '../webrtc/callManager'
+import {
+  playCallConnected,
+  playCallEnded,
+  startCallRing,
+  stopCallRing,
+} from '../sounds'
 
 type Props = {
   snapshot: CallSnapshot
@@ -23,6 +29,7 @@ export default function CallScreens({
 }: Props) {
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
   const localVideoRef = useRef<HTMLVideoElement>(null)
+  const previousState = useRef(snapshot.state)
 
   useEffect(() => {
     if (remoteVideoRef.current) {
@@ -36,6 +43,24 @@ export default function CallScreens({
     }
   }, [snapshot.localStream])
 
+  useEffect(() => {
+    if (snapshot.state !== 'incoming') {
+      stopCallRing()
+      return
+    }
+    startCallRing()
+    return () => stopCallRing()
+  }, [snapshot.state])
+
+  useEffect(() => {
+    const previous = previousState.current
+    if (previous !== snapshot.state) {
+      if (snapshot.state === 'connected') playCallConnected()
+      if (snapshot.state === 'ended') playCallEnded()
+    }
+    previousState.current = snapshot.state
+  }, [snapshot.state])
+
   if (snapshot.state === 'idle') return null
 
   if (snapshot.state === 'incoming') {
@@ -46,10 +71,10 @@ export default function CallScreens({
             <Phone size={28} />
           </div>
           <h2 className="text-center text-xl font-bold text-warm-charcoal lg:text-2xl">
-            {snapshot.peerName || 'Someone'} is calling
+            {snapshot.peerName || snapshot.peerId || 'Someone'} is calling
           </h2>
           <p className="mt-2 text-center text-[13px] text-soft-grey">
-            Only you and {snapshot.peerName || 'someone'} can see this call.
+            @{snapshot.peerId || 'someone'} · Only you and {snapshot.peerName || snapshot.peerId || 'someone'} can see this call.
           </p>
           <div className="mt-6 flex gap-3">
             <button
@@ -95,11 +120,17 @@ export default function CallScreens({
             {snapshot.cameraLabel}
           </div>
         )}
+        {snapshot.state === 'connected' && (
+          <div className="absolute left-3 top-3 z-20 rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-heart-pink shadow-soft">
+            Connected
+          </div>
+        )}
 
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
             <p className="text-xl font-bold text-warm-charcoal lg:text-2xl">
-              Calling {snapshot.peerName || 'someone'}...
+              {snapshot.state === 'calling' ? 'Calling' : 'Connecting'}{' '}
+              {snapshot.peerName || snapshot.peerId || 'someone'}...
             </p>
             <button
               type="button"
@@ -108,6 +139,17 @@ export default function CallScreens({
             >
               Cancel
             </button>
+          </div>
+        )}
+
+        {snapshot.state === 'ended' && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-warm-cream/95 p-4 text-center">
+            <p className="text-lg font-bold text-warm-charcoal">
+              {snapshot.error || 'Call ended'}
+            </p>
+            <p className="text-[13px] text-soft-grey">
+              {snapshot.peerName || snapshot.peerId || 'Contact'}
+            </p>
           </div>
         )}
       </div>

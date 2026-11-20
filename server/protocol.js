@@ -42,10 +42,8 @@ export function isOriginAllowed(origin, allowed) {
         return true;
     return allowed.includes(origin);
 }
-export function canAccessConversation(sender, chatId, viewer, globalThreadId) {
-    if (chatId === globalThreadId)
-        return true;
-    return viewer === sender || viewer === chatId;
+export function canAccessConversation(sender, recipient, viewer) {
+    return viewer === sender || viewer === recipient;
 }
 export function isAfterCursor(time, id, cursor) {
     if (!cursor)

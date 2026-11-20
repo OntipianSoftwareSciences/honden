@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Pool } from 'pg';
 import { WebSocket, WebSocketServer } from 'ws';
+import webPush from 'web-push';
 import { canAccessConversation, createSecret, isAfterCursor, isOriginAllowed, isValidChatId, isValidMessageId, isValidMessageText, issueToken, verifyToken, } from './protocol.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const legacyDataDir = join(here, 'data');
@@ -22,6 +23,14 @@ const recoveryNotice = 'Your recovery code is still the same. Keep it safe.';
 const globalThreadId = '#honey-den';
 const globalError = 'Please keep #honey-den kind and link-free.';
 const globalRateLimit = new Map();
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
+if (vapidPublicKey && vapidPrivateKey) {
+    webPush.setVapidDetails('mailto:taulikespie@gmail.com', vapidPublicKey, vapidPrivateKey);
+}
+function normalizeCallUsername(value) {
+    return value.trim().replace(/^@/, '').toLowerCase();
+}
 function blockedGlobalText(text) {
     return (/(https?:\/\/|www\.|t\.me\/|discord\.gg\/|bit\.ly\/|tinyurl\.com\/)/i.test(text) ||
         /\b(f[\*u]ck|sh[i\*]t|b[i\*]tch|n[i\*]gg\w*|f[a\*]g\w*|retard\w*)\b/i.test(text));
@@ -33,6 +42,7 @@ function isMessage(value) {
     return (typeof item.id === 'string' &&
         typeof item.chatId === 'string' &&
         typeof item.sender === 'string' &&
+        (item.recipient == null || typeof item.recipient === 'string') &&
         typeof item.text === 'string' &&
         typeof item.time === 'string');
 }
@@ -137,9 +147,17 @@ async function migrateJsonToPostgres(activePool) {
             ]);
         }
         for (const message of jsonMessages) {
-            await client.query(`INSERT INTO messages (id, chat_id, sender, text, time)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO NOTHING`, [message.id, message.chatId, message.sender, message.text, message.time]);
+            await client.query(`INSERT INTO messages (id, chat_id, sender, sender_id, recipient_id, text, time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO NOTHING`, [
+                message.id,
+                message.chatId,
+                message.sender,
+                message.sender,
+                message.chatId === globalThreadId ? null : message.chatId,
+                message.text,
+                message.time,
+            ]);
         }
         await client.query(`INSERT INTO storage_meta (key, value) VALUES ('json_migrated', '1')
        ON CONFLICT (key) DO NOTHING`);
@@ -165,14 +183,22 @@ async function loadFromPostgres(activePool) {
         recoveryAttempts: Number(row.recovery_attempts ?? 0),
         recoveryLockedUntil: Number(row.recovery_locked_until ?? 0),
     }));
-    const messageRows = await activePool.query('SELECT id, chat_id, sender, text, time FROM messages ORDER BY time ASC, id ASC');
-    messages = messageRows.rows.map((row) => ({
-        id: String(row.id),
-        chatId: String(row.chat_id),
-        sender: String(row.sender),
-        text: String(row.text),
-        time: String(row.time),
-    }));
+    const messageRows = await activePool.query(`SELECT id, chat_id, sender, recipient_id, text, time
+     FROM messages ORDER BY time ASC, id ASC`);
+    messages = messageRows.rows.map((row) => {
+        const chatId = String(row.chat_id);
+        const sender = String(row.sender);
+        return {
+            id: String(row.id),
+            chatId,
+            sender,
+            recipient: row.recipient_id == null
+                ? null
+                : String(row.recipient_id) || (chatId === globalThreadId ? null : chatId),
+            text: String(row.text),
+            time: String(row.time),
+        };
+    });
 }
 function queuePostgresWrite(write) {
     const next = writeQueue.then(write, write);
@@ -218,7 +244,15 @@ async function initStorage() {
           value text NOT NULL
         )
       `);
+        await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text');
+        await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id text');
+        await activePool.query(`UPDATE messages
+       SET sender_id = sender,
+           recipient_id = CASE WHEN chat_id = $1 THEN NULL ELSE chat_id END
+       WHERE sender_id IS NULL OR recipient_id IS NULL`, [globalThreadId]);
         await activePool.query('CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages (chat_id, time, id)');
+        await activePool.query('CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages (sender_id, time, id)');
+        await activePool.query('CREATE INDEX IF NOT EXISTS idx_messages_recipient_id ON messages (recipient_id, time, id)');
         const secretRow = await activePool.query("SELECT value FROM storage_meta WHERE key = 'session_secret'");
         const storedSecret = secretRow.rows[0];
         if (storedSecret && typeof storedSecret.value === 'string') {
@@ -252,9 +286,17 @@ function insertMessage(message) {
     if (!activePool)
         throw new Error('Postgres storage is not available');
     return queuePostgresWrite(async () => {
-        const result = await activePool.query(`INSERT INTO messages (id, chat_id, sender, text, time)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO NOTHING`, [message.id, message.chatId, message.sender, message.text, message.time]);
+        const result = await activePool.query(`INSERT INTO messages (id, chat_id, sender, sender_id, recipient_id, text, time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO NOTHING`, [
+            message.id,
+            message.chatId,
+            message.sender,
+            message.sender,
+            message.recipient,
+            message.text,
+            message.time,
+        ]);
         return (result.rowCount ?? 0) > 0;
     });
 }
@@ -497,6 +539,24 @@ app.get('/downloads/honden.apk', (_req, res) => {
 app.get('/health', (_req, res) => {
     res.json({ ok: true, storage: storageSource });
 });
+app.get('/api/chats', (req, res) => {
+    const viewer = tokenUser(req);
+    if (!viewer) {
+        res.status(401).json({ error: errorCopy });
+        return;
+    }
+    const peers = new Map();
+    for (const message of messages) {
+        if (!canAccessConversation(message.sender, message.recipient, viewer))
+            continue;
+        const peer = message.sender === viewer ? message.recipient : message.sender;
+        if (!peer || peer === viewer || peer === globalThreadId)
+            continue;
+        const time = Date.parse(message.time);
+        peers.set(peer, Math.max(peers.get(peer) ?? 0, Number.isFinite(time) ? time : 0));
+    }
+    res.json([...peers].map(([username, createdAt]) => ({ username, createdAt })));
+});
 app.get('/api/messages', (req, res) => {
     const viewer = tokenUser(req);
     if (!viewer) {
@@ -518,9 +578,9 @@ app.get('/api/messages', (req, res) => {
         ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
         : 200;
     let visible = messages.filter((message) => chatId === '*'
-        ? canAccessConversation(message.sender, message.chatId, viewer, globalThreadId)
+        ? canAccessConversation(message.sender, message.recipient, viewer)
         : message.chatId === chatId &&
-            canAccessConversation(message.sender, message.chatId, viewer, globalThreadId));
+            canAccessConversation(message.sender, message.recipient, viewer));
     if (cursor)
         visible = visible.filter((item) => isAfterCursor(item.time, item.id, cursor));
     visible.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
@@ -560,6 +620,7 @@ app.post('/api/messages', async (req, res) => {
         id,
         chatId: body.chatId,
         sender: viewer,
+        recipient: body.chatId === globalThreadId ? null : body.chatId,
         text: body.text.trim(),
         time: new Date().toISOString(),
     };
@@ -637,15 +698,21 @@ function sendIfOpen(socket, payload) {
         socket.send(JSON.stringify(payload));
 }
 function canReceive(client, message) {
-    return (message.chatId === globalThreadId ||
-        client.user === message.sender ||
-        client.user === message.chatId);
+    return canAccessConversation(message.sender, message.recipient, client.user);
 }
 function broadcastMessage(message) {
     const payload = { type: 'message', message };
     for (const client of clients) {
         if (canReceive(client, message))
             sendIfOpen(client.socket, payload);
+    }
+    if (message.recipient) {
+        void sendPushToRecipient(message.recipient, {
+            type: 'message',
+            chatId: message.chatId,
+            sender: message.sender,
+            senderName: message.sender,
+        }).catch(() => undefined);
     }
 }
 function broadcastDelete(message) {
@@ -655,21 +722,72 @@ function broadcastDelete(message) {
             sendIfOpen(client.socket, payload);
     }
 }
+async function sendPushToRecipient(recipient, payload) {
+    if (!pool || !vapidPublicKey || !vapidPrivateKey)
+        return;
+    const to = normalizeCallUsername(recipient);
+    const sender = normalizeCallUsername(payload.sender);
+    if (!to || !sender || to === sender)
+        return;
+    const activeDevices = new Set([...clients]
+        .filter((client) => normalizeCallUsername(client.user) === to && client.deviceId)
+        .map((client) => client.deviceId));
+    const result = await pool.query(`SELECT id, device_id, subscription
+     FROM push_subscriptions
+     WHERE username = $1 AND call_notifications = TRUE`, [to]);
+    const outgoing = {
+        ...payload,
+        sender,
+        senderName: payload.senderName || sender,
+    };
+    const body = JSON.stringify(outgoing);
+    await Promise.all(result.rows.map(async (row) => {
+        const deviceId = row.device_id == null ? '' : String(row.device_id);
+        if (deviceId && activeDevices.has(deviceId))
+            return;
+        const subscription = row.subscription;
+        if (!subscription || typeof subscription !== 'object')
+            return;
+        try {
+            await webPush.sendNotification(subscription, body);
+        }
+        catch (error) {
+            const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
+                ? Number(error.statusCode)
+                : 0;
+            if (statusCode === 410 || statusCode === 404) {
+                await pool?.query('DELETE FROM push_subscriptions WHERE id = $1', [row.id]);
+            }
+        }
+    }));
+}
+function sendIncomingCallPush(recipient, caller, callId, kind) {
+    return sendPushToRecipient(recipient, {
+        type: 'incoming-call',
+        callId,
+        sender: caller,
+        senderName: caller,
+        kind,
+    });
+}
 wss.on('connection', (socket, request) => {
     let token;
+    let deviceId = '';
     try {
-        token =
-            new URL(request.url ?? '/', 'http://localhost').searchParams.get('token') ?? undefined;
+        const url = new URL(request.url ?? '/', 'http://localhost').searchParams;
+        token = url.get('token') ?? undefined;
+        deviceId = url.get('deviceId') ?? '';
     }
     catch {
         token = undefined;
+        deviceId = '';
     }
     const user = verifyToken(token, sessionSecret);
     if (!user) {
         socket.close(1008, 'Unauthorized');
         return;
     }
-    const client = { socket, user, lastPong: Date.now() };
+    const client = { socket, user, deviceId, lastPong: Date.now() };
     clients.add(client);
     sendIfOpen(socket, { type: 'ready', userId: user });
     console.info('[ws] authenticated', { user });
@@ -692,10 +810,19 @@ wss.on('connection', (socket, request) => {
             frame.type.startsWith('call:') &&
             typeof frame.to === 'string' &&
             typeof frame.callId === 'string') {
-            const payload = JSON.stringify(frame);
+            const to = frame.to.trim().replace(/^@/, '').toLowerCase();
+            if (!to) return;
+            const payload = JSON.stringify({ ...frame, to, from: user, peerName: typeof frame.peerName === 'string' ? frame.peerName : user });
             for (const peer of clients) {
-                if (peer.socket.readyState === WebSocket.OPEN)
+                if (peer.user.trim().toLowerCase() === to &&
+                    peer.socket.readyState === WebSocket.OPEN) {
                     peer.socket.send(payload);
+                    break;
+                }
+            }
+            if (frame.type === 'call:invite') {
+                void sendIncomingCallPush(to, user, frame.callId, frame.kind === 'video' ? 'video' : 'voice')
+                    .catch(() => undefined);
             }
         }
     });
@@ -715,6 +842,21 @@ const heartbeat = setInterval(() => {
     }
 }, 30_000);
 heartbeat.unref();
+app.post('/api/call-decline', (req, res) => {
+    const body = req.body;
+    const callId = typeof body?.callId === 'string' ? body.callId : '';
+    const caller = typeof body?.to === 'string' ? normalizeCallUsername(body.to) : '';
+    if (!callId || !caller) {
+        res.status(400).json({ ok: false });
+        return;
+    }
+    for (const client of clients) {
+        if (normalizeCallUsername(client.user) === caller && client.socket.readyState === WebSocket.OPEN) {
+            sendIfOpen(client.socket, { type: 'call:reject', to: caller, from: caller, callId });
+        }
+    }
+    res.json({ ok: true });
+});
 const distDir = join(here, '..', 'dist');
 app.use(express.static(distDir));
 app.use((req, res, next) => {

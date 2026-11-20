@@ -9,6 +9,7 @@ import EmptyChat from './screens/EmptyChat'
 import AddUser from './screens/AddUser'
 import Settings from './screens/Settings'
 import { useSettings } from './hooks/useSettings'
+import { parseDeepLink } from './deepLink'
 import { useTouchBounce } from './hooks/useTouchBounce'
 import { useInstallPrompt } from './hooks/useInstallPrompt'
 import {
@@ -34,7 +35,9 @@ import type { ChannelStatus } from './transport/channel'
 import { startMessageSocket } from './transport/messageSocket'
 import { advanceCursor, type Cursor } from './transport/reliability'
 import {
+  clearChatStorage,
   formatTime,
+  isRealThreadName,
   loadChatBackup,
   loadOutbox,
   loadThreads,
@@ -43,6 +46,7 @@ import {
   removeOutbox,
   saveChatBackup,
   saveThreads,
+  setChatStorageUser,
   subscribeStore,
   updateOutboxStatus,
   upsertOutbox,
@@ -77,6 +81,9 @@ type WireMessage = {
 
 const fallbackUsername = 'sukar3tto'
 let ownUsername = localStorage.getItem('honden.username') ?? fallbackUsername
+setChatStorageUser(
+  localStorage.getItem('honden.username') && getSignalToken() ? ownUsername : null,
+)
 const localPeople = [
   { name: 'You', username: ownUsername },
   { name: 'Someone', username: 'someone' },
@@ -173,6 +180,24 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
     timestamp,
     text,
   }
+}
+
+async function loadChatsFromServer(): Promise<Thread[]> {
+  const response = await fetch(apiUrl('/api/chats'), { headers: authHeaders() })
+  if (!response.ok) throw new Error('chat load failed')
+  const data = (await response.json()) as { username?: unknown; createdAt?: unknown }[]
+  if (!Array.isArray(data)) return []
+  return data
+    .filter(
+      (item): item is { username: string; createdAt: number } =>
+        typeof item?.username === 'string' && isRealThreadName(item.username),
+    )
+    .map((item) => ({
+      id: item.username,
+      name: item.username,
+      username: item.username,
+      createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
+    }))
 }
 
 async function lookupAccount(username: string): Promise<string | null> {
@@ -332,6 +357,7 @@ const inviteToken =
   typeof window !== 'undefined'
     ? /^\/join\/([^/]+)\/?$/.exec(window.location.pathname)?.[1]
     : undefined
+const deepLink = parseDeepLink(typeof window === 'undefined' ? '' : window.location.search)
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>(() => {
@@ -353,6 +379,7 @@ export default function App() {
   const flushingOutbox = useRef(false)
   const syncCursorRef = useRef<Cursor | null>(null)
   const syncAllRef = useRef<() => Promise<void>>(async () => undefined)
+  const deepLinkHandled = useRef(false)
   const [user, setUser] = useState<AccountUser>(loadAccount)
   const [username, setUsername] = useState(ownUsername)
   const [identity, setIdentity] = useState<Identity | null>(null)
@@ -461,6 +488,55 @@ export default function App() {
   useEffect(() => subscribeChannel(() => setStatus(getChannelStatus())), [])
 
   useEffect(() => subscribeStore(() => setThreads(loadThreads())), [])
+
+  useEffect(() => {
+    if (!authToken) return
+    let active = true
+    setChatStorageUser(username)
+    syncCursorRef.current = null
+    setThreads([])
+    setMessages([])
+    setActiveThreadId('')
+    setBlockedGlobalSenders([])
+    void loadChatsFromServer()
+      .then((chats) => {
+        if (!active) return
+        saveThreads(chats)
+        setThreads(chats)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [authToken, username])
+
+  useEffect(() => {
+    if (!authToken || deepLinkHandled.current) return
+    const target = deepLink.chatId || deepLink.callFrom
+    if (!target) return
+    deepLinkHandled.current = true
+    if (threads.some((thread) => thread.id === target)) {
+      openThread(target)
+    } else {
+      void addByUsername(target).then((added) => {
+        if (added) openThread(target)
+      })
+    }
+    if (deepLink.callFrom && deepLink.callId) {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: {
+            type: 'honden:call-action',
+            action: 'accept',
+            callId: deepLink.callId,
+            sender: deepLink.callFrom,
+            senderName: deepLink.callFrom,
+            kind: deepLink.callKind ?? 'voice',
+          },
+        }),
+      )
+    }
+  }, [authToken, threads])
 
   useEffect(() => {
     syncAllRef.current = syncAll
@@ -689,6 +765,12 @@ export default function App() {
   }
 
   async function finishLogin(name: string, loginNotice?: string, token?: string) {
+    clearChatStorage()
+    setChatStorageUser(name)
+    setThreads([])
+    setMessages([])
+    setActiveThreadId('')
+    setBlockedGlobalSenders([])
     const loaded = await loadIdentity(name).catch(() => null)
     if (loaded) {
       setIdentity(loaded)
@@ -833,6 +915,12 @@ export default function App() {
   }
 
   function signOut() {
+    clearChatStorage()
+    setChatStorageUser(null)
+    setThreads([])
+    setMessages([])
+    setActiveThreadId('')
+    setBlockedGlobalSenders([])
     localStorage.removeItem('honden.token')
     localStorage.removeItem('honden.auth')
     localStorage.removeItem('honden.auth_token')

@@ -57,12 +57,10 @@ export function isOriginAllowed(origin: string | undefined, allowed: string[]): 
 
 export function canAccessConversation(
   sender: string,
-  chatId: string,
+  recipient: string | null,
   viewer: string,
-  globalThreadId: string,
 ): boolean {
-  if (chatId === globalThreadId) return true
-  return viewer === sender || viewer === chatId
+  return viewer === sender || viewer === recipient
 }
 
 export function isAfterCursor(time: string, id: string, cursor: Cursor | null): boolean {

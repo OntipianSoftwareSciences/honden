@@ -1,10 +1,18 @@
 import { isTauri } from '@tauri-apps/api/core'
+import { playNewMessage } from '../sounds'
 
 export type CallKind = 'voice' | 'video'
+
+type SignalMessage = {
+  sender?: string
+  recipient?: string | null
+  chatId?: string
+}
 
 export type SignalEvent = {
   type:
     | 'ready'
+    | 'message'
     | 'typing'
     | 'call:invite'
     | 'call:accept'
@@ -24,6 +32,7 @@ export type SignalEvent = {
   conversationId?: string
   isTyping?: boolean
   userId?: string
+  message?: SignalMessage
 }
 
 export type SignalClient = {
@@ -100,6 +109,21 @@ export function connectSignals(onEvent: (event: SignalEvent) => void): SignalCli
     try {
       const event = JSON.parse(String(message.data)) as SignalEvent
       if (event.from === signalId) return
+      const own = localStorage.getItem('honden.username')?.trim().replace(/^@/, '').toLowerCase()
+      const sender = event.message?.sender?.trim().replace(/^@/, '').toLowerCase()
+      const recipient =
+        typeof event.message?.recipient === 'string'
+          ? event.message.recipient.trim().replace(/^@/, '').toLowerCase()
+          : ''
+      if (
+        event.type === 'message' &&
+        own &&
+        sender &&
+        recipient === own &&
+        sender !== own
+      ) {
+        playNewMessage()
+      }
       onEvent(event)
     } catch {
       return

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { setSoundSettings } from '../sounds'
 
 export type Settings = {
   readReceipts: boolean
@@ -7,6 +8,8 @@ export type Settings = {
   simulateReplies: boolean
   relayUrl: string
   showGlobalChat: boolean
+  sounds: boolean
+  soundVolume: number
 }
 
 export type SettingKey = keyof Settings
@@ -25,6 +28,8 @@ const defaults: Settings = {
   simulateReplies: true,
   relayUrl: '',
   showGlobalChat: true,
+  sounds: true,
+  soundVolume: 0.35,
 }
 
 function load(): Settings {
@@ -43,6 +48,10 @@ export function useSettings() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
   }, [settings])
+
+  useEffect(() => {
+    setSoundSettings(settings.sounds, settings.soundVolume)
+  }, [settings.sounds, settings.soundVolume])
 
   useEffect(() => {
     const root = document.documentElement
