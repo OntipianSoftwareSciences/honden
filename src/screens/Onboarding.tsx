@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { apiUrl } from '../api/client'
-import HeartMark from '../components/HeartMark'
 
 type Props = {
-  onDone: (username: string, notice?: string) => void | Promise<void>
+  onDone: (username: string, notice?: string, token?: string) => void | Promise<void>
   invite?: boolean
 }
 
@@ -13,7 +12,7 @@ const secondaryButton =
   'w-full rounded-xl border border-border px-6 py-3 text-base font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink'
 const field =
   'w-full rounded-xl border border-border bg-white px-4 py-3 text-base text-warm-charcoal placeholder:text-soft-grey focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink'
-const loginError = "We couldn't find @thatname. Check the spelling and try again."
+const loginError = "We couldn't find that account. Check the spelling and try again."
 const takenError = 'That @username is already taken. Try another one.'
 const mismatchError = "Those passwords don't match. Try again."
 const recoveryError = "That recovery code doesn't match. Check it and try again."
@@ -39,6 +38,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
   const [newPassword, setNewPassword] = useState('')
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
   const [copied, setCopied] = useState(false)
+  const [recoveryToken, setRecoveryToken] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const backView = invite ? 'invite' : 'login'
@@ -54,12 +54,12 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: name, password }),
       })
-      const data = (await response.json()) as { error?: string }
+      const data = (await response.json()) as { error?: string; token?: string }
       if (!response.ok) {
         setError(data.error ?? loginError)
         return
       }
-      await onDone(name)
+      await onDone(name, undefined, data.token)
     } catch {
       setError(loginError)
     } finally {
@@ -82,13 +82,19 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: name, password }),
       })
-      const data = (await response.json()) as { error?: string; username?: string; recoveryCode?: string }
+      const data = (await response.json()) as {
+        error?: string
+        username?: string
+        recoveryCode?: string
+        token?: string
+      }
       if (!response.ok || !data.recoveryCode) {
         setError(data.error ?? takenError)
         return
       }
       setUsername(data.username ?? name)
       setRecoveryCode(data.recoveryCode)
+      setRecoveryToken(data.token ?? '')
       setView('recovery')
     } catch {
       setError(genericError)
@@ -127,12 +133,17 @@ export default function Onboarding({ onDone, invite = false }: Props) {
           confirmPassword: confirmNewPassword,
         }),
       })
-      const data = (await response.json()) as { error?: string; notice?: string; username?: string }
+      const data = (await response.json()) as {
+        error?: string
+        notice?: string
+        username?: string
+        token?: string
+      }
       if (!response.ok) {
         setError(data.error ?? (response.status === 429 ? rateLimitError : recoveryError))
         return
       }
-      await onDone(data.username ?? name, data.notice ?? recoveryNotice)
+      await onDone(data.username ?? name, data.notice ?? recoveryNotice, data.token)
     } catch {
       setError(recoveryError)
     } finally {
@@ -145,8 +156,8 @@ export default function Onboarding({ onDone, invite = false }: Props) {
       <main className="screen-fade flex min-h-screen flex-col bg-warm-cream">
         <div className="flex flex-1 items-center justify-center px-4 py-10">
           <section className="w-full max-w-md rounded-3xl border border-border bg-white p-8 text-center shadow-soft">
-            <div className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-soft-blush text-heart-pink">
-              <HeartMark size={24} />
+            <div className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-soft-blush text-2xl" aria-hidden="true">
+              🍯
             </div>
             {content}
             <p className="mt-4 text-[0.8125rem] text-soft-grey">
@@ -206,7 +217,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         <button
           type="button"
           className={`mt-3 ${primaryButton}`}
-          onClick={() => void onDone(username)}
+          onClick={() => void onDone(username, undefined, recoveryToken)}
         >
           I've saved it
         </button>

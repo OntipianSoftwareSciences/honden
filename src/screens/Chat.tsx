@@ -16,7 +16,6 @@ export default function Chat({
   name,
   threadId,
   messages,
-  readReceipts,
   peerCount,
   onBack,
   onSend,
@@ -32,10 +31,8 @@ export default function Chat({
   }, [messages.length])
 
   function send() {
-    console.log('Send tapped', { threadId, draft })
     const text = draft.trim()
     if (!text) return
-    console.log('sendMessage() called', { text, chatId: threadId, user: name })
     void onSend(threadId, text)
     setDraft('')
   }
@@ -114,7 +111,6 @@ export default function Chat({
                 )}
                 <span className="mt-1 block text-right text-[0.8125rem] text-soft-grey">
                   {message.time}
-                  {message.from === 'me' && readReceipts ? ' · Seen' : ''}
                 </span>
               </button>
             </div>

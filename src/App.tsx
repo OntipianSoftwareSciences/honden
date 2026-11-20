@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Lock, Phone } from 'lucide-react'
 import CallScreens from './components/CallScreens'
+import ConnectionPill from './components/ConnectionPill'
 import MediaPicker from './components/MediaPicker'
 import { ProfileModal, SecurityModal } from './components/Modals'
 import Onboarding from './screens/Onboarding'
@@ -30,6 +31,8 @@ import {
   subscribeChannel,
 } from './transport/channel'
 import type { ChannelStatus } from './transport/channel'
+import { startMessageSocket } from './transport/messageSocket'
+import { advanceCursor, type Cursor } from './transport/reliability'
 import {
   formatTime,
   loadChatBackup,
@@ -47,9 +50,10 @@ import {
 import type { OutboxMessage, Thread } from './store/messages'
 import {
   apiUrl,
+  authHeaders,
+  authenticatedWs,
   connectSignals,
   getSignalToken,
-  sameOriginWs,
   type CallKind,
   type SignalEvent,
 } from './api/client'
@@ -57,6 +61,7 @@ import { callManager, type CallSnapshot } from './webrtc/callManager'
 import type {
   AccountUser,
   ChatMessage,
+  ConnectionStatus,
   DeviceSession,
   GifResult,
   ProfilePatch,
@@ -77,9 +82,32 @@ const localPeople = [
   { name: 'Someone', username: 'someone' },
 ]
 
-const wsBase = sameOriginWs('/ws')
 const ecdh = { name: 'ECDH', namedCurve: 'P-256' } as const
 const unreadableMessage = "This message couldn't be read on this device."
+const globalThreadId = '#honey-den'
+const globalThread: Thread = {
+  id: globalThreadId,
+  name: globalThreadId,
+  username: 'everyone',
+  createdAt: 0,
+}
+const globalNotice = 'Global chat — everyone in HonDen can see this, not private.'
+const blockedGlobalKey = 'honden.global.blocked'
+
+function loadBlockedGlobalSenders(): string[] {
+  try {
+    const raw = localStorage.getItem(blockedGlobalKey)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function saveBlockedGlobalSenders(senders: string[]): void {
+  localStorage.setItem(blockedGlobalKey, JSON.stringify(senders))
+}
 
 function parseEncrypted(text: string): EncryptedPayload | null {
   try {
@@ -134,7 +162,8 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
   const timestamp = new Date(message.time).getTime()
   const sender = normalizeUsername(message.sender)
   const text = await decryptWireText(message.text, identity, sender, message.chatId)
-  const threadId = sender === ownUsername ? message.chatId : sender
+  const threadId =
+    message.chatId === globalThreadId ? globalThreadId : sender === ownUsername ? message.chatId : sender
   return {
     id: message.id,
     threadId,
@@ -202,7 +231,7 @@ async function publishKey(username: string, identity: Identity) {
   try {
     const response = await fetch(apiUrl('/api/public-key'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ username, publicJwk: identity.publicJwk }),
     })
     if (!response.ok) {
@@ -305,20 +334,25 @@ const inviteToken =
     : undefined
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>(
-    inviteToken ? 'invite' : localStorage.getItem('honden.username') ? 'chats' : 'onboarding',
-  )
+  const [screen, setScreen] = useState<Screen>(() => {
+    if (inviteToken) return 'invite'
+    return localStorage.getItem('honden.username') && getSignalToken() ? 'chats' : 'onboarding'
+  })
   const { settings, update } = useSettings()
   const [threads, setThreads] = useState<Thread[]>(loadThreads)
   const [messages, setMessages] = useState<ChatMessage[]>(loadChatBackup)
+  const [blockedGlobalSenders, setBlockedGlobalSenders] = useState<string[]>(loadBlockedGlobalSenders)
   const [invite, setInvite] = useState<Invite>(currentInvite)
   const [activeThreadId, setActiveThreadId] = useState('')
   const [status, setStatus] = useState<ChannelStatus>(getChannelStatus)
+  const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [call, setCall] = useState<CallSnapshot>(() => callManager.snapshot())
   const [draft, setDraft] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const composerRef = useRef<HTMLInputElement>(null)
   const flushingOutbox = useRef(false)
+  const syncCursorRef = useRef<Cursor | null>(null)
+  const syncAllRef = useRef<() => Promise<void>>(async () => undefined)
   const [user, setUser] = useState<AccountUser>(loadAccount)
   const [username, setUsername] = useState(ownUsername)
   const [identity, setIdentity] = useState<Identity | null>(null)
@@ -328,7 +362,7 @@ export default function App() {
   const [offline, setOffline] = useState(false)
   const [notice, setNotice] = useState('')
   const offlineTimer = useRef<number | undefined>(undefined)
-  const [retry, setRetry] = useState(0)
+  const authToken = getSignalToken()
   const [longPressedId, setLongPressedId] = useState('')
   const longPressTimer = useRef<number | undefined>(undefined)
   const longPressClearTimer = useRef<number | undefined>(undefined)
@@ -361,6 +395,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!authToken) return
     let active = true
     void loadIdentity(username)
       .then(async (loaded) => {
@@ -372,7 +407,7 @@ export default function App() {
     return () => {
       active = false
     }
-  }, [username])
+  }, [authToken, username])
 
   useEffect(() => {
     localStorage.setItem('honden.user', JSON.stringify(user))
@@ -399,20 +434,24 @@ export default function App() {
   useEffect(() => {
     const goOnline = () => {
       clearOffline()
-      setRetry((value) => value + 1)
+      setConnection('connecting')
       void flushOutbox()
     }
+    const goOffline = () => {
+      scheduleOffline()
+      setConnection('disconnected')
+    }
     window.addEventListener('online', goOnline)
-    window.addEventListener('offline', scheduleOffline)
+    window.addEventListener('offline', goOffline)
     return () => {
-      window.removeEventListener('online', goOnline)
-      window.removeEventListener('offline', scheduleOffline)
+    window.removeEventListener('online', goOnline)
+    window.removeEventListener('offline', goOffline)
       if (offlineTimer.current !== undefined) window.clearTimeout(offlineTimer.current)
     }
   }, [])
 
   useEffect(() => {
-    void fetch(apiUrl('/api/messages?chatId=health'))
+    void fetch(apiUrl('/health'))
       .then((response) => {
         if (response.ok) clearOffline()
       })
@@ -424,72 +463,37 @@ export default function App() {
   useEffect(() => subscribeStore(() => setThreads(loadThreads())), [])
 
   useEffect(() => {
-    if (screen !== 'chat') return
-    const cached = loadChatBackup().filter((message) => message.threadId === activeThreadId)
-    setMessages((current) => mergeChatMessages(current, cached))
-    void fetch(
-      apiUrl(
-        `/api/messages?chatId=${encodeURIComponent(activeThreadId)}&viewer=${encodeURIComponent(ownUsername)}`,
-      ),
-    )
-      .then((response) => {
-        if (!response.ok) throw new Error('offline')
-        clearOffline()
-        return response.json()
-      })
-      .then(async (items: WireMessage[]) => {
-        const serverMessages = Array.isArray(items)
-          ? await Promise.all(items.map((item) => toChatMessage(item, identity)))
-          : []
-        setMessages((current) =>
-          mergeChatMessages(current, serverMessages.length > 0 ? serverMessages : cached),
-        )
-      })
-      .catch(() => {
-        scheduleOffline()
-        setMessages((current) => mergeChatMessages(current, cached))
-      })
-  }, [screen, activeThreadId, retry, identity])
+    syncAllRef.current = syncAll
+  }, [authToken, identity])
 
   useEffect(() => {
-    let socket: WebSocket | undefined
-    let timer: number | undefined
-    let stopped = false
-
-    function connect() {
-      socket = new WebSocket(wsBase)
-      socket.onmessage = (event) => {
-        let frame: { type?: string; message?: WireMessage; id?: string }
-        try {
-          frame = JSON.parse(event.data as string) as {
-            type?: string
-            message?: WireMessage
-            id?: string
-          }
-        } catch {
-          return
-        }
+    if (!authToken) return
+    const controller = startMessageSocket(authenticatedWs('/ws'), {
+      onStatus: (next) => {
+        setConnection(next)
+        if (next === 'live') void flushOutbox()
+      },
+      onSync: () => syncAllRef.current(),
+      onFrame: (frame) => {
         if (frame.type === 'message' && frame.message) {
-          void toChatMessage(frame.message!, identity).then((chat) => {
+          const wire = frame.message as WireMessage
+          if (wire.id && wire.time) {
+            syncCursorRef.current = advanceCursor(syncCursorRef.current, {
+              time: wire.time,
+              id: wire.id,
+            })
+          }
+          void toChatMessage(wire, identityRef.current).then((chat) => {
             setMessages((current) => mergeChatMessages(current, [chat]))
           })
         }
         if (frame.type === 'delete' && frame.id) {
           setMessages((current) => current.filter((item) => item.id !== frame.id))
         }
-      }
-      socket.onclose = () => {
-        if (!stopped) timer = window.setTimeout(connect, 1000)
-      }
-    }
-
-    connect()
-    return () => {
-      stopped = true
-      if (timer) window.clearTimeout(timer)
-      socket?.close()
-    }
-  }, [identity])
+      },
+    })
+    return () => controller.close()
+  }, [authToken, identity])
 
   useEffect(() => {
     const unsubscribe = callManager.subscribe(setCall)
@@ -539,6 +543,7 @@ export default function App() {
   }, [activeRelayUrl])
 
   async function encryptedWireText(item: OutboxMessage): Promise<string> {
+    if (item.threadId === globalThreadId) return item.text
     if (item.text !== item.plain) return item.text
     const current = identityRef.current ?? (await loadIdentity(item.sender).catch(() => null))
     if (!current) return item.text
@@ -549,6 +554,34 @@ export default function App() {
     return JSON.stringify(await encryptText(item.plain, key))
   }
 
+  async function syncAll() {
+    const collected: WireMessage[] = []
+    let cursor = syncCursorRef.current ?? undefined
+    for (;;) {
+      const params = new URLSearchParams({ chatId: '*', limit: '200' })
+      if (cursor) {
+        params.set('afterTime', cursor.time)
+        params.set('afterId', cursor.id)
+      }
+      const response = await fetch(apiUrl(`/api/messages?${params.toString()}`), {
+        headers: authHeaders(),
+      })
+      if (!response.ok) throw new Error(`sync failed: ${response.status}`)
+      const items = (await response.json()) as WireMessage[]
+      if (!Array.isArray(items)) throw new Error('sync returned invalid data')
+      collected.push(...items)
+      const last = items[items.length - 1]
+      if (last) cursor = { time: last.time, id: last.id }
+      if (items.length < 200) break
+    }
+    const decrypted = await Promise.all(
+      collected.map((item) => toChatMessage(item, identityRef.current)),
+    )
+    setMessages((current) => mergeChatMessages(current, decrypted))
+    if (cursor) syncCursorRef.current = cursor
+    clearOffline()
+  }
+
   async function deliverMessage(queued: OutboxMessage): Promise<boolean> {
     let item = queued
     const text = await encryptedWireText(item)
@@ -557,14 +590,9 @@ export default function App() {
       upsertOutbox(item)
     }
     try {
-      console.log('POST /api/messages', {
-        chatId: item.threadId,
-        text: item.text,
-        sender: item.sender,
-      })
       const response = await fetch(apiUrl('/api/messages'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           id: item.id,
           chatId: item.threadId,
@@ -573,7 +601,6 @@ export default function App() {
           time: item.time,
         }),
       })
-      console.log('POST /api/messages response status', response.status)
       if (!response.ok) {
         console.error('POST /api/messages failed', response.status)
         updateOutboxStatus(item.id, 'failed')
@@ -628,7 +655,6 @@ export default function App() {
   }
 
   async function sendMessage(threadId: string, text: string, gifUrl?: string) {
-    console.log('sendMessage() called', { text, chatId: threadId, user: ownUsername })
     const plain = (gifUrl ?? text).trim()
     if (!plain) return
     const id = randomId()
@@ -646,29 +672,30 @@ export default function App() {
     }
     upsertOutbox(item)
     setMessages((current) => mergeChatMessages(current, [outboxToChatMessage(item)]))
-    console.log('Added to chat list', { id, chatId: threadId, text: plain, time })
     await deliverMessage(item)
   }
 
-  async function deleteMessage(id: string, threadId: string) {
+  async function deleteMessage(id: string) {
     removeOutbox(id)
     setMessages((current) => current.filter((item) => item.id !== id))
     try {
-      await fetch(
-        apiUrl(`/api/messages/${encodeURIComponent(id)}?chatId=${encodeURIComponent(threadId)}`),
-        { method: 'DELETE' },
-      )
+      await fetch(apiUrl(`/api/messages/${encodeURIComponent(id)}`), {
+        method: 'DELETE',
+        headers: authHeaders(),
+      })
     } catch {
       return
     }
   }
 
-  async function finishLogin(name: string, loginNotice?: string) {
+  async function finishLogin(name: string, loginNotice?: string, token?: string) {
     const loaded = await loadIdentity(name).catch(() => null)
     if (loaded) {
       setIdentity(loaded)
       await publishKey(name, loaded)
     }
+    if (token) localStorage.setItem('honden.token', token)
+    syncCursorRef.current = null
     ownUsername = name
     setUsername(name)
     setNotice(loginNotice ?? '')
@@ -767,12 +794,6 @@ export default function App() {
   }
 
   function submitDraft(chatId = activeThreadId) {
-    console.log('Send tapped', {
-      activeThreadId,
-      chatId,
-      user: ownUsername,
-      draft,
-    })
     const value = draft.trim()
     if (!value) return
     void sendMessage(chatId, value)
@@ -815,8 +836,10 @@ export default function App() {
     localStorage.removeItem('honden.token')
     localStorage.removeItem('honden.auth')
     localStorage.removeItem('honden.auth_token')
+    localStorage.removeItem('token')
     localStorage.removeItem('honden.username')
     localStorage.removeItem('honden.user')
+    syncCursorRef.current = null
     ownUsername = fallbackUsername
     setUsername(fallbackUsername)
     setUser({ ...defaultUser, id: fallbackUsername, username: fallbackUsername, displayName: 'You' })
@@ -849,15 +872,43 @@ export default function App() {
     if (activeThreadId === contactId) setScreen('chats')
   }
 
-  let screenView = <Onboarding onDone={(name, loginNotice) => void finishLogin(name, loginNotice)} />
+  function blockGlobalSender(senderId: string) {
+    const sender = normalizeUsername(senderId)
+    if (!sender || blockedGlobalSenders.includes(sender)) return
+    const next = [...blockedGlobalSenders, sender]
+    setBlockedGlobalSenders(next)
+    saveBlockedGlobalSenders(next)
+    setNotice(`Messages from @${sender} are hidden in #honey-den.`)
+  }
+
+  async function reportGlobalMessage(message: ChatMessage) {
+    try {
+      const response = await fetch(apiUrl('/api/global/report'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageId: message.id,
+          reporter: ownUsername,
+          sender: normalizeUsername(message.senderId),
+        }),
+      })
+      setNotice(response.ok ? 'Thanks — we’ll take a look.' : 'Thanks — we’ll take a look.')
+    } catch {
+      setNotice('Thanks — we’ll take a look.')
+    }
+  }
+
+  let screenView = (
+    <Onboarding onDone={(name, loginNotice, token) => void finishLogin(name, loginNotice, token)} />
+  )
 
   if (screen === 'invite') {
     screenView = (
       <Onboarding
         invite
-        onDone={(name, loginNotice) => {
+        onDone={(name, loginNotice, token) => {
           void (async () => {
-            await finishLogin(name, loginNotice)
+            await finishLogin(name, loginNotice, token)
             acceptInvite()
           })()
         }}
@@ -880,16 +931,25 @@ export default function App() {
       />
     )
   } else if (screen === 'chat') {
-    const thread = threads.find((item) => item.id === activeThreadId) ?? threads[0]
+    const thread =
+      activeThreadId === globalThreadId
+        ? globalThread
+        : threads.find((item) => item.id === activeThreadId) ?? threads[0]
     const threadId = thread?.id ?? activeThreadId
-    const visible = messages.filter((message) => message.threadId === threadId)
+    const isGlobal = threadId === globalThreadId
+    const visible = messages
+      .filter((message) => message.threadId === threadId)
+      .filter(
+        (message) =>
+          !isGlobal || !blockedGlobalSenders.includes(normalizeUsername(message.senderId)),
+      )
     const mentionMatch = /(^|\s)@([a-z0-9_]*)$/.exec(draft)
     const mentionCandidates = mentionMatch
       ? localPeople.filter((person) => person.username.startsWith(mentionMatch[2]))
       : []
 
     screenView = (
-      <div className="flex h-[100dvh] w-full overflow-hidden bg-warm-cream text-warm-charcoal lg:mx-auto lg:max-w-[1200px]">
+      <div className="flex h-[100dvh] w-full overflow-hidden bg-warm-cream text-warm-charcoal">
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-center gap-3 border-b border-border bg-white px-4 py-3">
             <button
@@ -904,26 +964,35 @@ export default function App() {
               <p className="truncate text-sm font-semibold text-warm-charcoal">
                 {thread?.name ?? 'Someone'}
               </p>
-              <p className="text-[13px] text-soft-grey">@{thread?.username ?? 'someone'}</p>
-              <p className="flex items-center gap-1 text-[12px] text-soft-grey">
-                <Lock size={10} className="text-heart-pink" aria-hidden="true" />
-                Only you and @{thread?.username ?? 'someone'} can read this.
-              </p>
+              {isGlobal ? (
+                <p className="text-[13px] text-soft-grey">A shared channel for everyone in HonDen.</p>
+              ) : (
+                <>
+                  <p className="text-[13px] text-soft-grey">@{thread?.username ?? 'someone'}</p>
+                  <p className="flex items-center gap-1 text-[12px] text-soft-grey">
+                    <Lock size={10} className="text-heart-pink" aria-hidden="true" />
+                    Only you and @{thread?.username ?? 'someone'} can read this.
+                  </p>
+                </>
+              )}
             </div>
+            <ConnectionPill status={connection} />
             <UserChip
               user={user}
               onProfile={() => setModal('profile')}
               onSecurity={() => setModal('security')}
             />
-            <button
-              type="button"
-              onClick={() => startCall('video')}
-              aria-label={`Call @${thread?.username ?? 'someone'}`}
-              className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
-            >
-              <Phone size={16} className="text-heart-pink" />
-              Call
-            </button>
+            {!isGlobal && (
+              <button
+                type="button"
+                onClick={() => startCall('video')}
+                aria-label={`Call @${thread?.username ?? 'someone'}`}
+                className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
+              >
+                <Phone size={16} className="text-heart-pink" />
+                Call
+              </button>
+            )}
           </header>
 
           <div
@@ -935,6 +1004,11 @@ export default function App() {
             onTouchCancel={messageBounce.onTouchCancel}
             className="touch-scroll min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden bg-warm-cream p-4"
           >
+            {isGlobal && (
+              <p className="rounded-xl bg-warm-amber/20 px-3 py-2 text-center text-[13px] font-semibold text-warm-charcoal">
+                {globalNotice}
+              </p>
+            )}
             {visible.length === 0 && (
               <div className="flex h-full items-center justify-center px-4">
                 <p className="max-w-sm text-center text-[13px] text-soft-grey">
@@ -978,13 +1052,15 @@ export default function App() {
                   )}
                   <div className="mt-1 flex items-center justify-between gap-4 text-[13px] text-soft-grey">
                     <span>{message.time}</span>
-                    <button
-                      type="button"
-                      onClick={() => deleteMessage(message.id, message.threadId)}
-                      className="flex min-h-11 items-center px-2 text-soft-red transition hover:text-deep-rose md:min-h-11"
-                    >
-                      Delete
-                    </button>
+                    {(!isGlobal || message.from === 'me') && (
+                      <button
+                        type="button"
+                        onClick={() => deleteMessage(message.id)}
+                        className="flex min-h-11 items-center px-2 text-soft-red transition hover:text-deep-rose md:min-h-11"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                   {message.status === 'sending' && (
                     <p className="mt-1 text-[13px] text-soft-grey">Sending...</p>
@@ -998,9 +1074,6 @@ export default function App() {
                       This message didn't send. Tap to try again.
                     </button>
                   )}
-                  {settings.readReceipts && message.from === 'me' && (
-                    <span className="text-[13px] text-soft-grey">✓✓</span>
-                  )}
                   {longPressedId === message.id && (
                     <div className="mt-2 flex gap-2 border-t border-border pt-2">
                       <button
@@ -1010,15 +1083,35 @@ export default function App() {
                       >
                         Copy
                       </button>
+                      {(!isGlobal || message.from === 'me') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLongPressedId('')
+                            void deleteMessage(message.id)
+                          }}
+                          className="min-h-11 flex-1 rounded-xl border border-soft-red px-3 text-[13px] font-semibold text-soft-red"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {isGlobal && message.from === 'them' && (
+                    <div className="mt-2 flex gap-2 border-t border-border pt-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setLongPressedId('')
-                          void deleteMessage(message.id, message.threadId)
-                        }}
+                        onClick={() => void reportGlobalMessage(message)}
+                        className="min-h-11 flex-1 rounded-xl border border-border px-3 text-[13px] font-semibold text-warm-charcoal"
+                      >
+                        Report
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => blockGlobalSender(message.senderId)}
                         className="min-h-11 flex-1 rounded-xl border border-soft-red px-3 text-[13px] font-semibold text-soft-red"
                       >
-                        Delete
+                        Block
                       </button>
                     </div>
                   )}
@@ -1137,8 +1230,9 @@ export default function App() {
       </div>
     )
   } else if (screen === 'chats') {
+    const visibleThreads = settings.showGlobalChat ? [globalThread, ...threads] : threads
     screenView = (
-      <div className="h-[100dvh] w-full overflow-hidden bg-warm-cream md:flex lg:mx-auto lg:max-w-[1200px]">
+      <div className="h-[100dvh] w-full overflow-hidden bg-warm-cream md:flex">
         <aside className="hidden w-[280px] shrink-0 flex-col items-center gap-3 border-r border-border bg-white py-4 md:flex lg:w-[300px]">
           <UserChip
             user={user}
@@ -1148,8 +1242,9 @@ export default function App() {
         </aside>
         <div className="min-w-0 w-full flex-1">
           <EmptyChat
-            threads={threads}
+            threads={visibleThreads}
             messages={messages}
+            connection={connection}
             onOpenSettings={() => setScreen('settings')}
             onOpenThread={openThread}
             onNewThread={newThread}

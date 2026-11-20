@@ -1,3 +1,11 @@
+export type ConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'waking'
+  | 'reconnecting'
+  | 'syncing'
+  | 'live'
+
 export type MessageKind = 'text' | 'gif'
 
 export type ChatMessage = {

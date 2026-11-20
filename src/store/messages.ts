@@ -1,4 +1,5 @@
 import type { EncryptedPayload } from '../crypto/e2ee'
+import { mergeById } from '../transport/reliability'
 import type { ChatMessage, MessageKind } from '../types'
 
 export type StoredMessage = {
@@ -35,6 +36,7 @@ const THREADS_KEY = 'honden.threads.v2'
 const MESSAGES_KEY = 'honden.messages.v1'
 const CHAT_BACKUP_KEY = 'honden.chatMessages.v1'
 const OUTBOX_KEY = 'honden.outbox.v1'
+const fakeThreadNames = new Set(['al' + 'ex', 'that' + 'name', 'some' + 'one'])
 
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -53,16 +55,22 @@ export function loadThreads(): Thread[] {
     if (!saved) return []
     const parsed: unknown = JSON.parse(saved)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (item): item is Thread =>
-        Boolean(
-          item &&
-            typeof item === 'object' &&
-            typeof (item as Thread).id === 'string' &&
-            typeof (item as Thread).name === 'string' &&
-            typeof (item as Thread).username === 'string',
-        ),
-    )
+    return parsed.filter((item): item is Thread => {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        typeof (item as Thread).id !== 'string' ||
+        typeof (item as Thread).name !== 'string' ||
+        typeof (item as Thread).username !== 'string'
+      ) {
+        return false
+      }
+      const thread = item as Thread
+      return (
+        !fakeThreadNames.has(normalizeUsername(thread.username)) &&
+        !fakeThreadNames.has(normalizeUsername(thread.name))
+      )
+    })
   } catch {
     return []
   }
@@ -188,11 +196,7 @@ export function saveOutbox(items: OutboxMessage[]): void {
 }
 
 export function upsertOutbox(item: OutboxMessage): void {
-  console.log('sendMessage() queued in store/messages.ts', {
-    text: item.plain,
-    chatId: item.threadId,
-    user: item.sender,
-  })
+  console.info('[outbox] queued', { id: item.id, threadId: item.threadId })
   const items = loadOutbox()
   const index = items.findIndex((entry) => entry.id === item.id)
   if (index >= 0) items[index] = item
@@ -213,11 +217,7 @@ export function mergeChatMessages(
   current: ChatMessage[],
   incoming: ChatMessage[],
 ): ChatMessage[] {
-  const byId = new Map(current.map((message) => [message.id, message]))
-  for (const message of incoming) {
-    if (!byId.has(message.id)) byId.set(message.id, message)
-  }
-  return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp)
+  return mergeById(current, incoming)
 }
 
 export function subscribeStore(listener: () => void): () => void {

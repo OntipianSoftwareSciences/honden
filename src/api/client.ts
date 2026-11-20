@@ -52,6 +52,18 @@ export function getSignalToken() {
   return getToken()
 }
 
+export function authHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+export function authenticatedWs(path = '/ws'): string {
+  const url = new URL(sameOriginWs(path))
+  const token = getToken()
+  if (token) url.searchParams.set('token', token)
+  return url.toString()
+}
+
 function getSignalId() {
   const saved = localStorage.getItem('honden.signalId')
   if (saved) return saved
@@ -82,7 +94,7 @@ export function sameOriginWs(path = '/ws'): string {
 
 export function connectSignals(onEvent: (event: SignalEvent) => void): SignalClient {
   const signalId = getSignalId()
-  const socket = new WebSocket(sameOriginWs('/ws'))
+  const socket = new WebSocket(authenticatedWs('/ws'))
 
   socket.onmessage = (message) => {
     try {

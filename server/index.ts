@@ -1,11 +1,23 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import express from 'express'
+import express, { type Request } from 'express'
 import { Pool } from 'pg'
 import { WebSocket, WebSocketServer } from 'ws'
+import {
+  canAccessConversation,
+  createSecret,
+  isAfterCursor,
+  isOriginAllowed,
+  isValidChatId,
+  isValidMessageId,
+  isValidMessageText,
+  issueToken,
+  verifyToken,
+  type Cursor,
+} from './protocol'
 
 type StoredMessage = {
   id: string
@@ -28,20 +40,26 @@ type StoredUser = {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const legacyDataDir = join(here, 'data')
-const dataDir = process.env.DATA_DIR || legacyDataDir
-const dataFile = join(dataDir, 'messages.json')
-const usersFile = join(dataDir, 'users.json')
 const downloadsDir = join(here, 'downloads')
 const apkFile = join(downloadsDir, 'honden.apk')
-mkdirSync(dataDir, { recursive: true })
 mkdirSync(downloadsDir, { recursive: true })
 const errorCopy = 'Something went wrong on our side. Nothing was sent. Try again in a moment.'
-const accountError = "We couldn't find @thatname. Check the spelling and try again."
+const accountError = "We couldn't find that account. Check the spelling and try again."
 const takenError = 'That @username is already taken. Try another one.'
 const mismatchError = "Those passwords don't match. Try again."
 const recoveryError = "That recovery code doesn't match. Check it and try again."
 const rateLimitError = 'Too many tries. Wait a minute and try again.'
 const recoveryNotice = 'Your recovery code is still the same. Keep it safe.'
+const globalThreadId = '#honey-den'
+const globalError = 'Please keep #honey-den kind and link-free.'
+const globalRateLimit = new Map<string, number>()
+
+function blockedGlobalText(text: string): boolean {
+  return (
+    /(https?:\/\/|www\.|t\.me\/|discord\.gg\/|bit\.ly\/|tinyurl\.com\/)/i.test(text) ||
+    /\b(f[\*u]ck|sh[i\*]t|b[i\*]tch|n[i\*]gg\w*|f[a\*]g\w*|retard\w*)\b/i.test(text)
+  )
+}
 
 function isMessage(value: unknown): value is StoredMessage {
   if (!value || typeof value !== 'object') return false
@@ -82,9 +100,7 @@ function readJsonArray<T>(file: string, guard: (value: unknown) => value is T): 
 }
 
 function jsonPaths(name: string): string[] {
-  const current = join(dataDir, name)
-  const legacy = join(legacyDataDir, name)
-  return dataDir === legacyDataDir ? [current] : [current, legacy]
+  return [join(legacyDataDir, name)]
 }
 
 function readMessagesFromJson(): StoredMessage[] {
@@ -130,14 +146,9 @@ function parseJwk(value: unknown): Record<string, unknown> | null {
 let messages: StoredMessage[] = []
 let users: StoredUser[] = []
 let pool: Pool | null = null
-let storageSource: 'Postgres' | 'Disk' = 'Disk'
-let writeQueue: Promise<void> = Promise.resolve()
-
-function writeJson(file: string, value: unknown): void {
-  const temp = `${file}.tmp`
-  writeFileSync(temp, JSON.stringify(value, null, 2))
-  renameSync(temp, file)
-}
+let sessionSecret = ''
+const storageSource = 'Postgres'
+let writeQueue: Promise<unknown> = Promise.resolve()
 
 async function migrateJsonToPostgres(activePool: Pool): Promise<void> {
   const marker = await activePool.query("SELECT value FROM storage_meta WHERE key = 'json_migrated'")
@@ -201,7 +212,7 @@ async function loadFromPostgres(activePool: Pool): Promise<void> {
   }))
 
   const messageRows = await activePool.query(
-    'SELECT id, chat_id, sender, text, time FROM messages ORDER BY time ASC',
+    'SELECT id, chat_id, sender, text, time FROM messages ORDER BY time ASC, id ASC',
   )
   messages = messageRows.rows.map((row) => ({
     id: String(row.id),
@@ -212,24 +223,26 @@ async function loadFromPostgres(activePool: Pool): Promise<void> {
   }))
 }
 
-function queuePostgresWrite(write: () => Promise<void>): Promise<void> {
-  const next = writeQueue
-    .then(write)
-    .catch((error) => console.error('Storage write failed', error))
-  writeQueue = next
+function queuePostgresWrite<T>(write: () => Promise<T>): Promise<T> {
+  const next = writeQueue.then(write, write)
+  writeQueue = next.then(
+    () => undefined,
+    () => undefined,
+  )
   return next
 }
 
 async function initStorage(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL
-  if (databaseUrl) {
-    try {
-      const activePool = new Pool({
-        connectionString: databaseUrl,
-        max: 3,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-      })
-      await activePool.query(`
+  if (!databaseUrl)
+    throw new Error('DATABASE_URL is required. HonDen stores accounts and messages in Postgres.')
+  const activePool = new Pool({
+    connectionString: databaseUrl,
+    max: 3,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+  })
+  try {
+    await activePool.query(`
         CREATE TABLE IF NOT EXISTS users (
           username text PRIMARY KEY,
           salt text NOT NULL,
@@ -241,7 +254,7 @@ async function initStorage(): Promise<void> {
           recovery_locked_until bigint NOT NULL DEFAULT 0
         )
       `)
-      await activePool.query(`
+    await activePool.query(`
         CREATE TABLE IF NOT EXISTS messages (
           id text PRIMARY KEY,
           chat_id text NOT NULL,
@@ -250,68 +263,89 @@ async function initStorage(): Promise<void> {
           time text NOT NULL
         )
       `)
-      await activePool.query(`
+    await activePool.query(`
         CREATE TABLE IF NOT EXISTS storage_meta (
           key text PRIMARY KEY,
           value text NOT NULL
         )
       `)
-      await migrateJsonToPostgres(activePool)
-      pool = activePool
-      await loadFromPostgres(activePool)
-      storageSource = 'Postgres'
-      console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
-      return
-    } catch (error) {
-      console.error('Postgres storage unavailable; using disk storage', error)
-      if (pool) {
-        void pool.end().catch(() => undefined)
-        pool = null
-      }
+    await activePool.query(
+      'CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages (chat_id, time, id)',
+    )
+    const secretRow = await activePool.query(
+      "SELECT value FROM storage_meta WHERE key = 'session_secret'",
+    )
+    const storedSecret = secretRow.rows[0] as { value?: unknown } | undefined
+    if (storedSecret && typeof storedSecret.value === 'string') {
+      sessionSecret = storedSecret.value
+    } else {
+      sessionSecret = createSecret(process.env.JWT_SECRET)
+      await activePool.query(
+        `INSERT INTO storage_meta (key, value) VALUES ('session_secret', $1)
+         ON CONFLICT (key) DO NOTHING`,
+        [sessionSecret],
+      )
     }
+    await migrateJsonToPostgres(activePool)
+    pool = activePool
+    await loadFromPostgres(activePool)
+    console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
+  } catch (error) {
+    void activePool.end().catch(() => undefined)
+    pool = null
+    throw error
   }
-  storageSource = 'Disk'
-  messages = readMessagesFromJson()
-  users = readUsersFromJson()
-  console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
 }
 
-await initStorage()
+try {
+  await initStorage()
+} catch (error) {
+  console.error('Postgres storage unavailable', error)
+  process.exit(1)
+}
 
-function persist(): Promise<void> {
+function insertMessage(message: StoredMessage): Promise<boolean> {
   const activePool = pool
-  if (!activePool) {
-    writeJson(dataFile, messages)
-    return Promise.resolve()
-  }
+  if (!activePool) throw new Error('Postgres storage is not available')
   return queuePostgresWrite(async () => {
-    const client = await activePool.connect()
-    try {
-      await client.query('BEGIN')
-      await client.query('DELETE FROM messages')
-      for (const message of messages) {
-        await client.query(
-          `INSERT INTO messages (id, chat_id, sender, text, time)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [message.id, message.chatId, message.sender, message.text, message.time],
-        )
-      }
-      await client.query('COMMIT')
-    } catch (error) {
-      await client.query('ROLLBACK')
-      throw error
-    } finally {
-      client.release()
-    }
+    const result = await activePool.query(
+      `INSERT INTO messages (id, chat_id, sender, text, time)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING`,
+      [message.id, message.chatId, message.sender, message.text, message.time],
+    )
+    return (result.rowCount ?? 0) > 0
   })
+}
+
+function deletePersistedMessage(id: string, sender: string): Promise<boolean> {
+  const activePool = pool
+  if (!activePool) throw new Error('Postgres storage is not available')
+  return queuePostgresWrite(async () => {
+    const result = await activePool.query(
+      'DELETE FROM messages WHERE id = $1 AND sender = $2',
+      [id, sender],
+    )
+    return (result.rowCount ?? 0) > 0
+  })
+}
+
+function tokenUser(req: Request): string | null {
+  const header = req.headers.authorization
+  if (typeof header === 'string' && header.startsWith('Bearer ')) {
+    return verifyToken(header.slice(7), sessionSecret)
+  }
+  const queryToken = (req.query as { token?: unknown }).token
+  return verifyToken(typeof queryToken === 'string' ? queryToken : undefined, sessionSecret)
+}
+
+function tokenFor(username: string): string {
+  return issueToken(username, sessionSecret)
 }
 
 function persistUsers(): Promise<void> {
   const activePool = pool
-  if (!activePool) {
-    writeJson(usersFile, users)
-    return Promise.resolve()
-  }
+  if (!activePool) throw new Error('Postgres storage is not available')
   return queuePostgresWrite(async () => {
     const client = await activePool.connect()
     try {
@@ -409,7 +443,7 @@ app.post('/api/accounts', async (req, res) => {
     recoveryLockedUntil: 0,
   })
   await persistUsers()
-  res.status(201).json({ username, recoveryCode })
+  res.status(201).json({ username, recoveryCode, token: tokenFor(username) })
 })
 
 app.post('/api/login', (req, res) => {
@@ -425,7 +459,7 @@ app.post('/api/login', (req, res) => {
     res.status(401).json({ error: accountError })
     return
   }
-  res.json({ username: user.username })
+  res.json({ username: user.username, token: tokenFor(user.username) })
 })
 
 app.post('/api/reset', async (req, res) => {
@@ -482,7 +516,11 @@ app.post('/api/reset', async (req, res) => {
   user.salt = salt
   user.passwordHash = hashPassword(body.newPassword, salt)
   await persistUsers()
-  res.json({ username: user.username, notice: recoveryNotice })
+  res.json({
+    username: user.username,
+    notice: recoveryNotice,
+    token: tokenFor(user.username),
+  })
 })
 
 app.get('/api/users/:username', (req, res) => {
@@ -518,6 +556,11 @@ app.get('/api/public-key', (req, res) => {
 
 app.post('/api/public-key', async (req, res) => {
   const username = cleanUsername((req.body as { username?: unknown } | undefined)?.username)
+  const viewer = tokenUser(req)
+  if (!viewer || viewer !== username) {
+    res.status(401).json({ error: accountError })
+    return
+  }
   const publicJwk = (req.body as { publicJwk?: unknown } | undefined)?.publicJwk
   const user = users.find((item) => item.username === username)
   if (!user || !publicJwk || typeof publicJwk !== 'object' || Array.isArray(publicJwk)) {
@@ -542,90 +585,252 @@ app.get('/downloads/honden.apk', (_req, res) => {
 })
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true })
+  res.json({ ok: true, storage: storageSource })
 })
 
 app.get('/api/messages', (req, res) => {
-  const chatId = typeof req.query.chatId === 'string' ? req.query.chatId : 'alex'
-  const viewer = typeof req.query.viewer === 'string' ? cleanUsername(req.query.viewer) : ''
-  res.json(
-    messages
-      .filter((message) =>
-        viewer
-          ? (message.chatId === chatId && message.sender === viewer) ||
-            (message.chatId === viewer && message.sender === chatId)
-          : message.chatId === chatId,
-      )
-      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()),
-  )
-})
-
-app.post('/api/messages', async (req, res) => {
-  const body = req.body as Partial<StoredMessage> | undefined
-  console.log(
-    `POST /api/messages, chatId=${typeof body?.chatId === 'string' ? body.chatId : ''}, text=${
-      typeof body?.text === 'string' ? body.text : ''
-    }`,
-  )
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const requestedChatId = req.query.chatId
   if (
-    !body ||
-    typeof body.chatId !== 'string' ||
-    typeof body.sender !== 'string' ||
-    typeof body.text !== 'string' ||
-    !body.text.trim()
+    typeof requestedChatId !== 'string' ||
+    (requestedChatId !== '*' && !isValidChatId(requestedChatId, globalThreadId))
   ) {
     res.status(400).json({ error: errorCopy })
     return
   }
+  const chatId = requestedChatId
+  const afterTime = typeof req.query.afterTime === 'string' ? req.query.afterTime : undefined
+  const afterId = typeof req.query.afterId === 'string' ? req.query.afterId : undefined
+  const cursor: Cursor | null =
+    afterTime && afterId ? { time: afterTime, id: afterId } : null
+  const requestedLimit = Number(req.query.limit)
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
+    : 200
 
+  let visible = messages.filter((message) =>
+    chatId === '*'
+      ? canAccessConversation(message.sender, message.chatId, viewer, globalThreadId)
+      : message.chatId === chatId &&
+        canAccessConversation(message.sender, message.chatId, viewer, globalThreadId),
+  )
+  if (cursor) visible = visible.filter((item) => isAfterCursor(item.time, item.id, cursor))
+  visible.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id))
+  res.json(visible.slice(0, limit))
+})
+
+app.post('/api/messages', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const body = req.body as Partial<StoredMessage> | undefined
+  if (!body || !isValidChatId(body.chatId, globalThreadId) || !isValidMessageText(body.text)) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  if (
+    body.chatId !== globalThreadId &&
+    body.chatId !== viewer &&
+    !users.some((user) => user.username === body.chatId)
+  ) {
+    res.status(403).json({ error: errorCopy })
+    return
+  }
+
+  if (body.chatId === globalThreadId) {
+    if (blockedGlobalText(body.text)) {
+      res.status(400).json({ error: globalError })
+      return
+    }
+    const lastPostedAt = globalRateLimit.get(viewer) ?? 0
+    if (Date.now() - lastPostedAt < 1000) {
+      res.status(429).json({ error: rateLimitError })
+      return
+    }
+    globalRateLimit.set(viewer, Date.now())
+  }
+
+  const id = body.id && isValidMessageId(body.id) ? body.id : randomUUID()
   const message: StoredMessage = {
-    id: typeof body.id === 'string' && body.id ? body.id : randomUUID(),
+    id,
     chatId: body.chatId,
-    sender: body.sender,
+    sender: viewer,
     text: body.text.trim(),
     time: new Date().toISOString(),
   }
-  messages.push(message)
-  await persist()
-  console.log(`Saved ${messages.length} messages`)
-  broadcast({ type: 'message', message })
-  res.status(201).json(message)
+
+  try {
+    const inserted = await insertMessage(message)
+    if (!inserted) {
+      const existing = messages.find((item) => item.id === id)
+      console.info('[message] duplicate acknowledged', { id })
+      res.status(200).json(existing ?? message)
+      return
+    }
+    messages.push(message)
+    broadcastMessage(message)
+    console.info('[message] persisted', { id, chatId: message.chatId })
+    res.status(201).json(message)
+  } catch (error) {
+    console.error(
+      '[message] persistence failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    res.status(503).json({ error: errorCopy })
+  }
 })
 
 app.delete('/api/messages/:id', async (req, res) => {
-  const next = messages.filter((message) => message.id !== req.params.id)
-  if (next.length === messages.length) {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const existing = messages.find((message) => message.id === req.params.id)
+  if (!existing) {
     res.status(404).json({ error: errorCopy })
     return
   }
-  messages = next
-  await persist()
-  broadcast({ type: 'delete', id: req.params.id })
-  res.status(204).end()
+  if (existing.sender !== viewer) {
+    res.status(403).json({ error: errorCopy })
+    return
+  }
+  try {
+    const deleted = await deletePersistedMessage(existing.id, viewer)
+    if (!deleted) {
+      res.status(404).json({ error: errorCopy })
+      return
+    }
+    messages = messages.filter((message) => message.id !== existing.id)
+    broadcastDelete(existing)
+    console.info('[message] deleted', { id: existing.id })
+    res.status(204).end()
+  } catch (error) {
+    console.error('[message] delete failed', error instanceof Error ? error.message : 'unknown')
+    res.status(503).json({ error: errorCopy })
+  }
 })
 
 const server = createServer(app)
-const wss = new WebSocketServer({ server })
 
-wss.on('connection', (socket) => {
+const allowedOrigins = [
+  ...new Set([
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://honden.onrender.com',
+    'tauri://localhost',
+    'http://tauri.localhost',
+    ...(process.env.CLIENT_ORIGIN ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  ]),
+]
+
+type WsClient = { socket: WebSocket; user: string; lastPong: number }
+const clients = new Set<WsClient>()
+
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 64 * 1024,
+  verifyClient: (info: { origin: string }) => isOriginAllowed(info.origin, allowedOrigins),
+})
+
+function sendIfOpen(socket: WebSocket, payload: unknown): void {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload))
+}
+
+function canReceive(client: WsClient, message: StoredMessage): boolean {
+  return (
+    message.chatId === globalThreadId ||
+    client.user === message.sender ||
+    client.user === message.chatId
+  )
+}
+
+function broadcastMessage(message: StoredMessage): void {
+  const payload = { type: 'message', message }
+  for (const client of clients) {
+    if (canReceive(client, message)) sendIfOpen(client.socket, payload)
+  }
+}
+
+function broadcastDelete(message: StoredMessage): void {
+  const payload = { type: 'delete', id: message.id }
+  for (const client of clients) {
+    if (canReceive(client, message)) sendIfOpen(client.socket, payload)
+  }
+}
+
+wss.on('connection', (socket, request) => {
+  let token: string | undefined
+  try {
+    token =
+      new URL(request.url ?? '/', 'http://localhost').searchParams.get('token') ?? undefined
+  } catch {
+    token = undefined
+  }
+  const user = verifyToken(token, sessionSecret)
+  if (!user) {
+    socket.close(1008, 'Unauthorized')
+    return
+  }
+
+  const client: WsClient = { socket, user, lastPong: Date.now() }
+  clients.add(client)
+  sendIfOpen(socket, { type: 'ready', userId: user })
+  console.info('[ws] authenticated', { user })
+
+  socket.on('pong', () => {
+    client.lastPong = Date.now()
+  })
+
   socket.on('message', (raw) => {
+    let frame: { type?: unknown; to?: unknown; callId?: unknown }
     try {
-      const frame = JSON.parse(raw.toString()) as { type?: unknown }
-      if (typeof frame.type === 'string' && frame.type.startsWith('call:')) {
-        broadcast(frame)
-      }
+      frame = JSON.parse(raw.toString()) as { type?: unknown; to?: unknown; callId?: unknown }
     } catch {
       return
     }
+    if (frame.type === 'ping') {
+      sendIfOpen(socket, { type: 'pong' })
+      return
+    }
+    if (
+      typeof frame.type === 'string' &&
+      frame.type.startsWith('call:') &&
+      typeof frame.to === 'string' &&
+      typeof frame.callId === 'string'
+    ) {
+      const payload = JSON.stringify(frame)
+      for (const peer of clients) {
+        if (peer.socket.readyState === WebSocket.OPEN) peer.socket.send(payload)
+      }
+    }
   })
+
+  const remove = () => clients.delete(client)
+  socket.on('close', remove)
+  socket.on('error', remove)
 })
 
-function broadcast(frame: unknown) {
-  const payload = JSON.stringify(frame)
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) client.send(payload)
+const heartbeat = setInterval(() => {
+  const now = Date.now()
+  for (const client of clients) {
+    if (now - client.lastPong > 90_000) {
+      client.socket.terminate()
+      continue
+    }
+    if (client.socket.readyState === WebSocket.OPEN) client.socket.ping()
   }
-}
+}, 30_000)
+heartbeat.unref()
 
 const distDir = join(here, '..', 'dist')
 app.use(express.static(distDir))
