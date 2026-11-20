@@ -17,7 +17,7 @@ import {
   issueToken,
   verifyToken,
   type Cursor,
-} from './protocol'
+} from './protocol.js'
 
 type StoredMessage = {
   id: string

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:full": "docker compose up -d && node scripts/dev.mjs",
-    "build": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.server.json && node -e \"require('fs').copyFileSync('server-dist/index.js','server/index.js')\" && vite build",
+    "build": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.server.json && node -e \"const fs=require('fs');fs.copyFileSync('server-dist/index.js','server/index.js');fs.copyFileSync('server-dist/protocol.js','server/protocol.js')\" && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:server": "tsc --noEmit -p tsconfig.server.json",
     "test": "node --import tsx --test tests/*.test.ts",

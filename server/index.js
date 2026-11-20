@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Pool } from 'pg';
 import { WebSocket, WebSocketServer } from 'ws';
-import { canAccessConversation, createSecret, isAfterCursor, isOriginAllowed, isValidChatId, isValidMessageId, isValidMessageText, issueToken, verifyToken, } from './protocol';
+import { canAccessConversation, createSecret, isAfterCursor, isOriginAllowed, isValidChatId, isValidMessageId, isValidMessageText, issueToken, verifyToken, } from './protocol.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const legacyDataDir = join(here, 'data');
 const downloadsDir = join(here, 'downloads');
