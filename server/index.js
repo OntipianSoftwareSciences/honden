@@ -477,10 +477,12 @@ app.post('/api/public-key', async (req, res) => {
         res.status(400).json({ error: accountError });
         return;
     }
-    user.publicJwk = publicJwk;
-    await persistUsers();
-    console.log('Public key uploaded', username);
-    res.json({ ok: true });
+    if (!user.publicJwk) {
+        user.publicJwk = publicJwk;
+        await persistUsers();
+        console.info('Public key stored', username);
+    }
+    res.json({ ok: true, publicJwk: user.publicJwk });
 });
 app.get('/downloads/honden.apk', (_req, res) => {
     if (!existsSync(apkFile)) {
