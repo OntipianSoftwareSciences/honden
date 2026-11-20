@@ -46,10 +46,10 @@ export default function CallScreens({
             <Phone size={28} />
           </div>
           <h2 className="text-center text-xl font-bold text-warm-charcoal lg:text-2xl">
-            Alex is calling
+            {snapshot.peerName || 'Someone'} is calling
           </h2>
           <p className="mt-2 text-center text-[13px] text-soft-grey">
-            Only you and Alex can see this call.
+            Only you and {snapshot.peerName || 'someone'} can see this call.
           </p>
           <div className="mt-6 flex gap-3">
             <button
@@ -98,7 +98,9 @@ export default function CallScreens({
 
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
-            <p className="text-xl font-bold text-warm-charcoal lg:text-2xl">Calling Alex...</p>
+            <p className="text-xl font-bold text-warm-charcoal lg:text-2xl">
+              Calling {snapshot.peerName || 'someone'}...
+            </p>
             <button
               type="button"
               onClick={onHangup}
@@ -150,7 +152,7 @@ export default function CallScreens({
           <p className="mt-2 text-center text-[13px] text-soft-grey">Only one camera found</p>
         )}
         <p className="mt-2 text-center text-[13px] text-soft-grey">
-          Only you and Alex can see this call.
+          Only you and {snapshot.peerName || 'someone'} can see this call.
         </p>
         {snapshot.error && (
           <p className="mt-1 text-center text-[13px] text-warm-charcoal">{snapshot.error}</p>

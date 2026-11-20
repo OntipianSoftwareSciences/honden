@@ -74,7 +74,6 @@ const fallbackUsername = 'sukar3tto'
 let ownUsername = localStorage.getItem('honden.username') ?? fallbackUsername
 const localPeople = [
   { name: 'You', username: ownUsername },
-  { name: 'Alex', username: 'alex' },
   { name: 'Someone', username: 'someone' },
 ]
 
@@ -521,7 +520,9 @@ export default function App() {
           break
       }
     })
-    callManager.setSignalingSender((event) => signal.send(event))
+    callManager.setSignalingSender((event) =>
+      signal.send({ ...event, peerName: `@${ownUsername}` }),
+    )
 
     return () => {
       unsubscribe()
@@ -735,8 +736,12 @@ export default function App() {
     setInvite(next)
   }
 
+  function callPeerName(threadId: string) {
+    return `@${threads.find((item) => item.id === threadId)?.username ?? threadId}`
+  }
+
   function startCall(kind: CallKind) {
-    void callManager.startOutgoing(activeThreadId, kind)
+    void callManager.startOutgoing(activeThreadId, kind, callPeerName(activeThreadId))
   }
 
   function insertEmoji(emoji: string) {
@@ -902,7 +907,7 @@ export default function App() {
               <p className="text-[13px] text-soft-grey">@{thread?.username ?? 'someone'}</p>
               <p className="flex items-center gap-1 text-[12px] text-soft-grey">
                 <Lock size={10} className="text-heart-pink" aria-hidden="true" />
-                Only you and Alex can read this.
+                Only you and @{thread?.username ?? 'someone'} can read this.
               </p>
             </div>
             <UserChip
@@ -913,7 +918,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => startCall('video')}
-              aria-label="Call Alex"
+              aria-label={`Call @${thread?.username ?? 'someone'}`}
               className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
             >
               <Phone size={16} className="text-heart-pink" />

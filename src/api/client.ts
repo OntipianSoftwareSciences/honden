@@ -16,6 +16,7 @@ export type SignalEvent = {
   callId?: string
   to?: string
   from?: string
+  peerName?: string
   kind?: CallKind
   sdp?: RTCSessionDescriptionInit
   candidate?: RTCIceCandidateInit

@@ -250,7 +250,7 @@ export default function Settings({
             <div className="flex items-center justify-between gap-4 py-2">
               <div>
                 <p className="font-bold">Gentle notifications</p>
-                <p className={noteText}>You have a message from Alex</p>
+                <p className={noteText}>You have a new message.</p>
               </div>
               <Toggle
                 label="Gentle notifications"

@@ -13,6 +13,7 @@ export type CallSnapshot = {
   kind: CallKind
   callId: string
   peerId: string
+  peerName: string
   muted: boolean
   cameraOff: boolean
   cameraCount: number
@@ -45,6 +46,7 @@ function idleSnapshot(): CallSnapshot {
     kind: 'voice',
     callId: '',
     peerId: '',
+    peerName: '',
     muted: false,
     cameraOff: false,
     cameraCount: 0,
@@ -60,6 +62,7 @@ class CallManager {
   private kind: CallKind = 'voice'
   private callId = ''
   private peerId = ''
+  private peerName = ''
   private pc: RTCPeerConnection | null = null
   private local: MediaStream | null = null
   private remote: MediaStream | null = null
@@ -89,6 +92,7 @@ class CallManager {
       kind: this.kind,
       callId: this.callId,
       peerId: this.peerId,
+      peerName: this.peerName,
       muted: this.muted,
       cameraOff: this.cameraOff,
       cameraCount: this.cameras.length,
@@ -140,6 +144,7 @@ class CallManager {
     this.state = 'idle'
     this.callId = ''
     this.peerId = ''
+    this.peerName = ''
     this.kind = 'voice'
     this.error = ''
     this.emit()
@@ -233,9 +238,10 @@ class CallManager {
     this.hangup()
   }
 
-  async startOutgoing(peerId: string, kind: CallKind) {
+  async startOutgoing(peerId: string, kind: CallKind, peerName = '') {
     this.reset()
     this.peerId = peerId
+    this.peerName = peerName
     this.kind = kind
     this.callId = this.makeId()
     this.state = 'calling'
@@ -263,6 +269,7 @@ class CallManager {
       return
     }
     this.peerId = event.from
+    this.peerName = event.peerName ?? ''
     this.callId = event.callId
     this.kind = event.kind
     this.state = 'incoming'
@@ -305,6 +312,7 @@ class CallManager {
       return
     }
     if (event.from) this.peerId = event.from
+    if (event.peerName) this.peerName = event.peerName
 
     this.state = 'connecting'
     this.emit()
