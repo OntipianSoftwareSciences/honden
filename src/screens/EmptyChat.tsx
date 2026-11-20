@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import HeartMark from '../components/HeartMark'
-import type { ChatMessage } from '../types'
+import type { ChatMessage, ConnectionStatus } from '../types'
 import type { Thread } from '../store/messages'
 
 type Props = {
   threads: Thread[]
   messages: ChatMessage[]
+  connection?: ConnectionStatus
   onOpenSettings: () => void
   onOpenThread: (id: string) => void
   onNewThread: (name: string) => void

@@ -6,6 +6,7 @@ export type Settings = {
   largeText: boolean
   simulateReplies: boolean
   relayUrl: string
+  showGlobalChat: boolean
 }
 
 export type SettingKey = keyof Settings
@@ -23,6 +24,7 @@ const defaults: Settings = {
   largeText: false,
   simulateReplies: true,
   relayUrl: '',
+  showGlobalChat: true,
 }
 
 function load(): Settings {
