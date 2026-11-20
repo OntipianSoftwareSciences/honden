@@ -234,8 +234,10 @@ function queuePostgresWrite<T>(write: () => Promise<T>): Promise<T> {
 
 async function initStorage(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL
-  if (!databaseUrl)
+  if (!databaseUrl) {
+    console.warn('DATABASE_URL is required. HonDen stores accounts and messages in Postgres.')
     throw new Error('DATABASE_URL is required. HonDen stores accounts and messages in Postgres.')
+  }
   const activePool = new Pool({
     connectionString: databaseUrl,
     max: 3,
