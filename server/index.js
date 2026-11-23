@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypt
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Pool } from 'pg';
@@ -12,6 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const legacyDataDir = join(here, 'data');
 const downloadsDir = join(here, 'downloads');
 const apkFile = join(downloadsDir, 'honden.apk');
+const apkReleaseUrl = 'https://github.com/OntipianSoftwareSciences/honden/releases/download/apk-latest/honden.apk';
 mkdirSync(downloadsDir, { recursive: true });
 const errorCopy = 'Something went wrong on our side. Nothing was sent. Try again in a moment.';
 const accountError = "We couldn't find that account. Check the spelling and try again.";
@@ -659,15 +661,65 @@ app.delete('/api/push-subscription', async (req, res) => {
         res.status(503).json({ error: errorCopy });
     }
 });
-app.get('/downloads/honden.apk', (_req, res) => {
-    if (!existsSync(apkFile)) {
-        console.info('HonDen APK requested but not present:', apkFile);
-        res.status(404).json({ error: 'The Android app is being prepared. Check back in a moment.' });
-        return;
-    }
+app.get(['/download', '/download/'], (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Download HonDen for Android</title>
+    <style>
+      body { margin: 0; background: #fff7f2; color: #3b2733; font-family: system-ui, -apple-system, sans-serif; }
+      main { max-width: 960px; margin: 0 auto; padding: 56px 28px 72px; }
+      h1 { margin: 0 0 18px; color: #b23a68; font-size: 44px; line-height: 1.1; }
+      p { font-size: 22px; line-height: 1.6; }
+      .download {
+        display: flex; min-height: 88px; align-items: center; justify-content: center;
+        margin: 32px 0; padding: 16px 28px; border-radius: 18px; background: #ff6b9d;
+        color: #fff; font-size: 28px; font-weight: 800; text-align: center;
+        text-decoration: none; box-shadow: 0 10px 28px rgba(178, 58, 104, 0.24);
+        outline-offset: 5px;
+      }
+      .download:focus-visible { outline: 6px solid #7a1f45; }
+      .note { border-radius: 16px; background: #fff; padding: 24px; font-size: 20px; }
+      .meta { color: #7a5266; font-size: 18px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Download HonDen for Android</h1>
+      <p class="meta">One universal ARM64 APK for Galaxy S21 and Meta Quest 2. Android 10 / API 29+.</p>
+      <a class="download" href="/downloads/honden.apk" download="honden.apk">Download HonDen for Android</a>
+      <p class="note">On Quest 2, open this page in Quest Browser, tap Download, tap the downloaded file, Allow unknown sources, tap Install, then open HonDen from Unknown Sources in your library. On Galaxy S21, open this page in Chrome, tap Download, tap the downloaded file, Allow install unknown apps, tap Install.</p>
+    </main>
+  </body>
+</html>`);
+});
+app.get('/downloads/honden.apk', async (_req, res) => {
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
     res.setHeader('Content-Disposition', 'attachment; filename="honden.apk"');
-    res.sendFile(apkFile);
+    res.setHeader('Cache-Control', 'no-store');
+    if (existsSync(apkFile)) {
+        res.sendFile(apkFile);
+        return;
+    }
+    try {
+        const upstream = await fetch(apkReleaseUrl, { redirect: 'follow' });
+        if (!upstream.ok || !upstream.body) {
+            throw new Error(`APK download returned ${upstream.status}`);
+        }
+        const length = upstream.headers.get('content-length');
+        if (length)
+            res.setHeader('Content-Length', length);
+        const stream = Readable.fromWeb(upstream.body);
+        stream.on('error', () => res.destroy());
+        stream.pipe(res);
+    }
+    catch (error) {
+        console.warn('[apk] download unavailable', error instanceof Error ? error.message : 'unknown');
+        res.status(404).json({ error: 'The Android APK is being prepared. Check back in a moment.' });
+    }
 });
 app.get('/health', (_req, res) => {
     res.json({ ok: true, storage: storageSource });

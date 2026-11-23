@@ -29,6 +29,9 @@
       "appimage",
       "deb"
     ],
+    "android": {
+      "minSdkVersion": 29
+    },
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"

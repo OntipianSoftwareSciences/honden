@@ -9,6 +9,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,18 +58,65 @@ jobs:
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
 
-      - name: Set generated Android SDK target to 34
+      - name: Pin generated Android SDK to 34 / min 29
         run: |
           find src-tauri/gen/android -name '*.gradle.kts' -exec \
             sed -i -E 's/(compileSdk[[:space:]]*=[[:space:]]*)37/\134/; s/(targetSdk[[:space:]]*=[[:space:]]*)37/\134/' {} +
-          grep -R -nE 'compileSdk|targetSdk' src-tauri/gen/android --include='*.gradle.kts'
+          grep -R -nE 'compileSdk|targetSdk|minSdk' src-tauri/gen/android --include='*.gradle.kts'
+          if grep -R -qE 'minSdk[[:space:]]*=[[:space:]]*([3-9][0-9]|[1-9][0-9]{2,})' src-tauri/gen/android --include='*.gradle.kts'; then
+            echo 'minSdk is above 29; Quest 2 needs API 29 or lower' >&2
+            exit 1
+          fi
 
       - name: Build ARM64 APK
         run: npx tauri android build --apk --target aarch64
 
+      - name: Verify universal ARM64 APK
+        run: |
+          mapfile -t APKS < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk')
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo 'No APK was produced' >&2
+            exit 1
+          fi
+          APK=''
+          BEST_SIZE=0
+          for CANDIDATE in "${APKS[@]}"; do
+            if unzip -l "$CANDIDATE" | grep -qE 'lib/(armeabi-v7a|x86|x86_64)/'; then
+              continue
+            fi
+            if ! unzip -l "$CANDIDATE" | grep -q 'lib/arm64-v8a/'; then
+              continue
+            fi
+            SIZE=$(stat -c%s "$CANDIDATE")
+            if [ "$SIZE" -gt "$BEST_SIZE" ]; then
+              APK="$CANDIDATE"
+              BEST_SIZE="$SIZE"
+            fi
+          done
+          if [ -z "$APK" ]; then
+            echo 'No single universal ARM64 APK was produced' >&2
+            printf '%s\n' "${APKS[@]}" >&2
+            exit 1
+          fi
+          echo "Using universal ARM64 APK: $APK"
+          unzip -l "$APK" | grep -E 'lib/[a-zA-Z0-9_-]+/' | sort -u || true
+          cp "$APK" honden.apk
+
+      - name: Publish APK for browser download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view apk-latest >/dev/null 2>&1; then
+            gh release upload apk-latest honden.apk --clobber
+          else
+            gh release create apk-latest honden.apk \
+              --title "HonDen Android APK" \
+              --notes "Latest single universal ARM64 APK for Galaxy S21 and Meta Quest 2."
+          fi
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HonDen-GalaxyS21-APK
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: HonDen-ARM64-APK
+          path: honden.apk
           if-no-files-found: error
