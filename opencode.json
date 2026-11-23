@@ -1,5 +1,0 @@
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-rate-limit"],
-  "model": "opencode/big-pickle"
-}

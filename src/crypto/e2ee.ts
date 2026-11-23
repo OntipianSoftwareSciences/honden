@@ -9,6 +9,12 @@ export type Identity = {
   publicJwk: JsonWebKey
 }
 
+export type KeyBackup = {
+  salt: string
+  iv: string
+  ciphertext: string
+}
+
 const curve = { name: 'ECDH', namedCurve: 'P-256' } as const
 
 function toBase64(bytes: Uint8Array): string {
@@ -108,4 +114,51 @@ export async function decryptTextWithAny(
     }
   }
   return null
+}
+
+async function backupWrappingKey(password: string, salt: string): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  )
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: fromBase64(salt) as BufferSource, iterations: 210000, hash: 'SHA-256' },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  )
+}
+
+/** Wrap the device's ECDH private key with the account password. The server only ever sees ciphertext. */
+export async function backupPrivateKey(
+  privateJwk: JsonWebKey,
+  password: string,
+): Promise<KeyBackup> {
+  const salt = toBase64(crypto.getRandomValues(new Uint8Array(16)))
+  const payload = await encryptText(JSON.stringify(privateJwk), await backupWrappingKey(password, salt))
+  return { salt, iv: payload.iv, ciphertext: payload.ciphertext }
+}
+
+/** Unwrap a stored private key. Returns null on a wrong password or corrupt backup. */
+export async function restorePrivateKey(
+  backup: KeyBackup,
+  password: string,
+): Promise<JsonWebKey | null> {
+  if (!backup || typeof backup.salt !== 'string' || typeof backup.iv !== 'string' || typeof backup.ciphertext !== 'string') {
+    return null
+  }
+  try {
+    const json = await decryptText(
+      { iv: backup.iv, ciphertext: backup.ciphertext },
+      await backupWrappingKey(password, backup.salt),
+    )
+    const jwk = JSON.parse(json) as JsonWebKey
+    return jwk && typeof jwk === 'object' && typeof jwk.d === 'string' ? jwk : null
+  } catch {
+    return null
+  }
 }

@@ -6,6 +6,7 @@ export type MessageFrame = {
   message?: unknown
   id?: string
   userId?: string
+  [key: string]: unknown
 }
 
 export type MessageSocketHandlers = {
@@ -17,6 +18,7 @@ export type MessageSocketHandlers = {
 export type MessageSocketController = {
   close: () => void
   restart: (url?: string) => void
+  send: (frame: Record<string, unknown>) => void
 }
 
 const HEARTBEAT_MS = 25_000
@@ -228,6 +230,10 @@ export function startMessageSocket(
         if (current.readyState < WebSocket.CLOSING) current.close()
       }
       connect()
+    },
+    send(frame) {
+      if (stopped || socket?.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify(frame))
     },
   }
 }

@@ -34,6 +34,7 @@ type StoredUser = {
   salt: string
   passwordHash: string
   publicJwk: Record<string, unknown> | null
+  privateKeyBackup?: Record<string, unknown>
   recoverySalt?: string
   recoveryHash?: string
   recoveryAttempts?: number
@@ -225,6 +226,7 @@ async function loadFromPostgres(activePool: Pool): Promise<void> {
     salt: String(row.salt),
     passwordHash: String(row.password_hash),
     publicJwk: parseJwk(row.public_jwk),
+    privateKeyBackup: parseJwk(row.private_key_backup) ?? undefined,
     recoverySalt: row.recovery_salt == null ? undefined : String(row.recovery_salt),
     recoveryHash: row.recovery_hash == null ? undefined : String(row.recovery_hash),
     recoveryAttempts: Number(row.recovery_attempts ?? 0),
@@ -279,6 +281,7 @@ async function initStorage(): Promise<void> {
           salt text NOT NULL,
           password_hash text NOT NULL,
           public_jwk jsonb,
+          private_key_backup jsonb,
           recovery_salt text,
           recovery_hash text,
           recovery_attempts integer NOT NULL DEFAULT 0,
@@ -300,6 +303,7 @@ async function initStorage(): Promise<void> {
           value text NOT NULL
         )
       `)
+    await activePool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS private_key_backup jsonb')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id text')
     await activePool.query(
@@ -408,13 +412,14 @@ function persistUsers(): Promise<void> {
       for (const user of users) {
         await client.query(
           `INSERT INTO users
-            (username, salt, password_hash, public_jwk, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            (username, salt, password_hash, public_jwk, private_key_backup, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             user.username,
             user.salt,
             user.passwordHash,
             user.publicJwk ? JSON.stringify(user.publicJwk) : null,
+            user.privateKeyBackup ? JSON.stringify(user.privateKeyBackup) : null,
             user.recoverySalt ?? null,
             user.recoveryHash ?? null,
             user.recoveryAttempts ?? 0,
@@ -621,12 +626,57 @@ app.post('/api/public-key', async (req, res) => {
     res.status(400).json({ error: accountError })
     return
   }
-  if (!user.publicJwk) {
+  // Write-once while a key backup exists. An account without a backup has lost
+  // its original key, so the first login after the fix can establish a new one.
+  if (!user.publicJwk || !user.privateKeyBackup) {
     user.publicJwk = publicJwk as Record<string, unknown>
     await persistUsers()
     console.info('Public key stored', username)
   }
   res.json({ ok: true, publicJwk: user.publicJwk })
+})
+
+app.get('/api/key-backup', (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: accountError })
+    return
+  }
+  const user = users.find((item) => item.username === viewer)
+  res.json({ backup: user?.privateKeyBackup ?? null })
+})
+
+app.post('/api/key-backup', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: accountError })
+    return
+  }
+  const backup = (req.body as { backup?: unknown } | undefined)?.backup
+  if (!backup || typeof backup !== 'object' || Array.isArray(backup)) {
+    res.status(400).json({ error: accountError })
+    return
+  }
+  const value = backup as Record<string, unknown>
+  if (
+    typeof value.salt !== 'string' ||
+    typeof value.iv !== 'string' ||
+    typeof value.ciphertext !== 'string'
+  ) {
+    res.status(400).json({ error: accountError })
+    return
+  }
+  const user = users.find((item) => item.username === viewer)
+  if (!user) {
+    res.status(404).json({ error: accountError })
+    return
+  }
+  if (!user.privateKeyBackup) {
+    user.privateKeyBackup = value
+    await persistUsers()
+    console.info('Private key backup stored', viewer)
+  }
+  res.json({ ok: true })
 })
 
 app.get('/downloads/honden.apk', (_req, res) => {
@@ -1000,7 +1050,6 @@ wss.on('connection', (socket, request) => {
           peer.socket.readyState === WebSocket.OPEN
         ) {
           peer.socket.send(payload)
-          break
         }
       }
       if (frame.type === 'call:invite') {

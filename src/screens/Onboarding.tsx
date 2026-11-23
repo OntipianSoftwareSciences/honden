@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { apiUrl } from '../api/client'
 
 type Props = {
-  onDone: (username: string, notice?: string, token?: string) => void | Promise<void>
+  onDone: (username: string, notice?: string, token?: string, password?: string) => void | Promise<void>
   invite?: boolean
 }
 
@@ -59,7 +59,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         setError(data.error ?? loginError)
         return
       }
-      await onDone(name, undefined, data.token)
+      await onDone(name, undefined, data.token, password)
     } catch {
       setError(loginError)
     } finally {
@@ -143,7 +143,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         setError(data.error ?? (response.status === 429 ? rateLimitError : recoveryError))
         return
       }
-      await onDone(data.username ?? name, data.notice ?? recoveryNotice, data.token)
+      await onDone(data.username ?? name, data.notice ?? recoveryNotice, data.token, newPassword)
     } catch {
       setError(recoveryError)
     } finally {
@@ -217,7 +217,7 @@ export default function Onboarding({ onDone, invite = false }: Props) {
         <button
           type="button"
           className={`mt-3 ${primaryButton}`}
-          onClick={() => void onDone(username, undefined, recoveryToken)}
+          onClick={() => void onDone(username, undefined, recoveryToken, password)}
         >
           I've saved it
         </button>

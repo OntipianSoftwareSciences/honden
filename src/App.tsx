@@ -14,14 +14,17 @@ import { parseDeepLink } from './deepLink'
 import { useTouchBounce } from './hooks/useTouchBounce'
 import { useInstallPrompt } from './hooks/useInstallPrompt'
 import {
+  backupPrivateKey,
   createIdentity,
   decryptText,
   deriveSharedKey,
   encryptText,
   importPublicKey,
   randomId,
+  restorePrivateKey,
   type EncryptedPayload,
   type Identity,
+  type KeyBackup,
 } from './crypto/e2ee'
 import { currentInvite, inviteUrl, relayUrl, rotateInvite } from './net/invite'
 import type { Invite } from './net/invite'
@@ -57,12 +60,12 @@ import {
   apiUrl,
   authHeaders,
   authenticatedWs,
-  connectSignals,
   getSignalToken,
   type CallKind,
   type SignalEvent,
 } from './api/client'
 import { callManager, type CallSnapshot } from './webrtc/callManager'
+import { playNewMessage } from './sounds'
 import type {
   AccountUser,
   ChatMessage,
@@ -228,8 +231,55 @@ function outboxToChatMessage(item: OutboxMessage): ChatMessage {
   }
 }
 
-async function loadIdentity(username: string): Promise<Identity> {
+async function fetchKeyBackup(): Promise<KeyBackup | null> {
+  try {
+    const response = await fetch(apiUrl('/api/key-backup'), { headers: authHeaders() })
+    if (!response.ok) return null
+    const data = (await response.json()) as { backup?: unknown }
+    return data.backup && typeof data.backup === 'object' ? (data.backup as KeyBackup) : null
+  } catch {
+    return null
+  }
+}
+
+async function saveKeyBackup(backup: KeyBackup): Promise<void> {
+  try {
+    await fetch(apiUrl('/api/key-backup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ backup }),
+    })
+  } catch {
+    // Backup is best-effort; the local key still works on this device.
+  }
+}
+
+async function identityFromPrivateJwk(privateJwk: JsonWebKey): Promise<Identity> {
+  const privateKey = await crypto.subtle.importKey('jwk', privateJwk, ecdh, true, ['deriveBits'])
+  const publicJwk: JsonWebKey = { ...privateJwk }
+  delete publicJwk.d
+  const publicKey = await importPublicKey(publicJwk)
+  return { privateKey, publicKey, publicJwk }
+}
+
+async function loadIdentity(username: string, password?: string): Promise<Identity> {
   const key = `honden.identity.${username}`
+  if (password) {
+    const backup = await fetchKeyBackup()
+    if (backup) {
+      const privateJwk = await restorePrivateKey(backup, password)
+      if (privateJwk) {
+        try {
+          const identity = await identityFromPrivateJwk(privateJwk)
+          const publicJwk: JsonWebKey = { ...privateJwk }
+          delete publicJwk.d
+          localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk }))
+          console.log('Identity restored from account backup', username)
+          return identity
+        } catch {}
+      }
+    }
+  }
   const raw = localStorage.getItem(key)
   if (raw) {
     try {
@@ -251,6 +301,16 @@ async function loadIdentity(username: string): Promise<Identity> {
   localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }))
   console.log('Key created', username)
   return identity
+}
+
+async function ensureKeyBackup(identity: Identity, password?: string): Promise<void> {
+  if (!password) return
+  try {
+    const privateJwk = await crypto.subtle.exportKey('jwk', identity.privateKey)
+    await saveKeyBackup(await backupPrivateKey(privateJwk, password))
+  } catch {
+    // Never block sign-in on a backup failure.
+  }
 }
 
 async function publishKey(username: string, identity: Identity) {
@@ -549,6 +609,14 @@ export default function App() {
   }, [authToken, identity])
 
   useEffect(() => {
+    const unsubscribe = callManager.subscribe(setCall)
+    return () => {
+      unsubscribe()
+      callManager.dispose()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!authToken) return
     const controller = startMessageSocket(authenticatedWs('/ws'), {
       onStatus: (next) => {
@@ -565,6 +633,7 @@ export default function App() {
               id: wire.id,
             })
           }
+          if (wire.sender !== ownUsername) playNewMessage()
           void toChatMessage(wire, identityRef.current).then((chat) => {
             setMessages((current) => mergeChatMessages(current, [chat]))
           })
@@ -572,50 +641,41 @@ export default function App() {
         if (frame.type === 'delete' && frame.id) {
           setMessages((current) => current.filter((item) => item.id !== frame.id))
         }
+        if (typeof frame.type === 'string' && frame.type.startsWith('call:')) {
+          const event = frame as unknown as SignalEvent
+          switch (event.type) {
+            case 'call:invite':
+              callManager.handleInvite(event)
+              break
+            case 'call:accept':
+              void callManager.handleAccept(event)
+              break
+            case 'call:reject':
+              callManager.handleHangup(event)
+              break
+            case 'call:offer':
+              void callManager.handleOffer(event)
+              break
+            case 'call:answer':
+              void callManager.handleAnswer(event)
+              break
+            case 'call:ice':
+              void callManager.handleIce(event)
+              break
+            case 'call:hangup':
+              callManager.handleHangup(event)
+              break
+            default:
+              break
+          }
+        }
       },
     })
+    callManager.setSignalingSender((event) =>
+      controller.send({ ...event, peerName: `@${ownUsername}` }),
+    )
     return () => controller.close()
   }, [authToken, identity])
-
-  useEffect(() => {
-    const unsubscribe = callManager.subscribe(setCall)
-    const signal = connectSignals((event: SignalEvent) => {
-      switch (event.type) {
-        case 'call:invite':
-          callManager.handleInvite(event)
-          break
-        case 'call:accept':
-          void callManager.handleAccept(event)
-          break
-        case 'call:reject':
-          callManager.handleHangup(event)
-          break
-        case 'call:offer':
-          void callManager.handleOffer(event)
-          break
-        case 'call:answer':
-          void callManager.handleAnswer(event)
-          break
-        case 'call:ice':
-          void callManager.handleIce(event)
-          break
-        case 'call:hangup':
-          callManager.handleHangup(event)
-          break
-        default:
-          break
-      }
-    })
-    callManager.setSignalingSender((event) =>
-      signal.send({ ...event, peerName: `@${ownUsername}` }),
-    )
-
-    return () => {
-      unsubscribe()
-      signal.close()
-      callManager.dispose()
-    }
-  }, [])
 
   const activeRelayUrl = relayUrl(invite, settings.relayUrl)
 
@@ -770,19 +830,25 @@ export default function App() {
     }
   }
 
-  async function finishLogin(name: string, loginNotice?: string, token?: string) {
+  async function finishLogin(
+    name: string,
+    loginNotice?: string,
+    token?: string,
+    password?: string,
+  ) {
     clearChatStorage()
     setChatStorageUser(name)
     setThreads([])
     setMessages([])
     setActiveThreadId('')
     setBlockedGlobalSenders([])
-    const loaded = await loadIdentity(name).catch(() => null)
+    if (token) localStorage.setItem('honden.token', token)
+    const loaded = await loadIdentity(name, password).catch(() => null)
     if (loaded) {
       setIdentity(loaded)
       await publishKey(name, loaded)
+      await ensureKeyBackup(loaded, password)
     }
-    if (token) localStorage.setItem('honden.token', token)
     syncCursorRef.current = null
     ownUsername = name
     setUsername(name)
@@ -995,16 +1061,20 @@ export default function App() {
   const visibleThreads = settings.showGlobalChat ? [globalThread, ...threads] : threads
 
   let screenView = (
-    <Onboarding onDone={(name, loginNotice, token) => void finishLogin(name, loginNotice, token)} />
+    <Onboarding
+      onDone={(name, loginNotice, token, password) =>
+        void finishLogin(name, loginNotice, token, password)
+      }
+    />
   )
 
   if (screen === 'invite') {
     screenView = (
       <Onboarding
         invite
-        onDone={(name, loginNotice, token) => {
+        onDone={(name, loginNotice, token, password) => {
           void (async () => {
-            await finishLogin(name, loginNotice, token)
+            await finishLogin(name, loginNotice, token, password)
             acceptInvite()
           })()
         }}
