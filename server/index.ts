@@ -312,6 +312,9 @@ async function initStorage(): Promise<void> {
           call_notifications boolean NOT NULL DEFAULT true
         )
       `)
+    await activePool.query(
+      'ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS message_notifications boolean NOT NULL DEFAULT false',
+    )
     await activePool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS private_key_backup jsonb')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id text')
@@ -706,6 +709,7 @@ app.post('/api/push-subscription', async (req, res) => {
     subscription?: unknown
     deviceId?: unknown
     callNotifications?: unknown
+    messageNotifications?: unknown
   }
   const subscription = body?.subscription
   if (!subscription || typeof subscription !== 'object' || Array.isArray(subscription)) {
@@ -720,25 +724,53 @@ app.post('/api/push-subscription', async (req, res) => {
   try {
     await pool.query(
       `INSERT INTO push_subscriptions
-         (id, username, device_id, subscription, call_notifications)
-       VALUES ($1, $2, $3, $4, $5)
+         (id, username, device_id, subscription, call_notifications, message_notifications)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (id) DO UPDATE SET
          username = EXCLUDED.username,
          device_id = EXCLUDED.device_id,
          subscription = EXCLUDED.subscription,
-         call_notifications = EXCLUDED.call_notifications`,
+         call_notifications = EXCLUDED.call_notifications,
+         message_notifications = EXCLUDED.message_notifications`,
       [
         endpoint,
         viewer,
         typeof body.deviceId === 'string' ? body.deviceId : '',
         JSON.stringify(subscription),
-        body.callNotifications !== false,
+        body.callNotifications === true,
+        body.messageNotifications === true,
       ],
     )
     res.json({ ok: true })
   } catch (error) {
     console.error(
       '[push] subscription save failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    res.status(503).json({ error: errorCopy })
+  }
+})
+
+app.delete('/api/push-subscription', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer || !pool) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const endpoint = (req.body as { endpoint?: unknown } | undefined)?.endpoint
+  if (typeof endpoint !== 'string' || !endpoint) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  try {
+    await pool.query('DELETE FROM push_subscriptions WHERE id = $1 AND username = $2', [
+      endpoint,
+      viewer,
+    ])
+    res.json({ ok: true })
+  } catch (error) {
+    console.error(
+      '[push] subscription delete failed',
       error instanceof Error ? error.message : 'unknown',
     )
     res.status(503).json({ error: errorCopy })
@@ -952,14 +984,7 @@ function broadcastMessage(message: StoredMessage): void {
   for (const client of clients) {
     if (canReceive(client, message)) sendIfOpen(client.socket, payload)
   }
-  if (message.recipient) {
-    void sendPushToRecipient(message.recipient, {
-      type: 'message',
-      chatId: message.chatId,
-      sender: message.sender,
-      senderName: message.sender,
-    }).catch(() => undefined)
-  }
+  void sendMessagePush(message).catch(() => undefined)
 }
 
 function broadcastDelete(message: StoredMessage): void {
@@ -984,19 +1009,54 @@ type PushPayload =
       kind: 'video' | 'voice'
     }
 
+type MessagePushPayload = Extract<PushPayload, { type: 'message' }>
+
+function sendMessagePush(message: StoredMessage): Promise<void> {
+  const payload: MessagePushPayload = {
+    type: 'message',
+    chatId: message.chatId,
+    sender: message.sender,
+    senderName: message.sender,
+  }
+  if (message.chatId === globalThreadId) return sendPushToSubscribers(payload, message.sender)
+  return message.recipient
+    ? sendPushToRecipient(message.recipient, payload, 'message')
+    : Promise.resolve()
+}
+
+async function sendPushToSubscribers(
+  payload: MessagePushPayload,
+  exclude: string,
+): Promise<void> {
+  if (!pool) return
+  const result = await pool.query(
+    `SELECT DISTINCT username
+     FROM push_subscriptions
+     WHERE message_notifications = TRUE AND username <> $1`,
+    [normalizeCallUsername(exclude)],
+  )
+  await Promise.all(
+    result.rows.map((row) =>
+      sendPushToRecipient(String(row.username), payload, 'message'),
+    ),
+  )
+}
+
 async function sendPushToRecipient(
   recipient: string,
   payload: PushPayload,
+  kind: 'call' | 'message',
 ): Promise<void> {
   if (!pool || !vapidPublicKey || !vapidPrivateKey) return
   const to = normalizeCallUsername(recipient)
   const sender = normalizeCallUsername(payload.sender)
   if (!to || !sender || to === sender) return
+  const flagColumn = kind === 'call' ? 'call_notifications' : 'message_notifications'
 
   const result = await pool.query(
     `SELECT id, device_id, subscription
      FROM push_subscriptions
-     WHERE username = $1 AND call_notifications = TRUE`,
+     WHERE username = $1 AND ${flagColumn} = TRUE`,
     [to],
   )
   const outgoing = {
@@ -1031,13 +1091,17 @@ function sendIncomingCallPush(
   callId: string,
   kind: 'video' | 'voice',
 ): Promise<void> {
-  return sendPushToRecipient(recipient, {
-    type: 'incoming-call',
-    callId,
-    sender: caller,
-    senderName: caller,
-    kind,
-  })
+  return sendPushToRecipient(
+    recipient,
+    {
+      type: 'incoming-call',
+      callId,
+      sender: caller,
+      senderName: caller,
+      kind,
+    },
+    'call',
+  )
 }
 
 wss.on('connection', (socket, request) => {

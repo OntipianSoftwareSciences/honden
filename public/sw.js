@@ -51,7 +51,6 @@ self.addEventListener('push', (event) => {
     const url = `/chats?chat=${encodeURIComponent(chatId)}&from=${encodeURIComponent(sender)}`
     event.waitUntil(
       self.registration.showNotification(`New message from @${sender}`, {
-        body: senderName,
         tag: `honden-message-${chatId}`,
         data: { type: 'message', chatId, sender, senderName, url },
       }),

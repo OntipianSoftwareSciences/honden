@@ -5,7 +5,7 @@ import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
-import { disableCallPush, enableCallPush, pushSupported } from '../net/push'
+import { pushSupported, setPushKind, type PushKind } from '../net/push'
 
 type Props = {
   settings: Settings
@@ -35,10 +35,25 @@ export default function Settings({
   onLogout,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [notificationsBlocked, setNotificationsBlocked] = useState(false)
   const [relayDraft, setRelayDraft] = useState(settings.relayUrl)
   const [copied, setCopied] = useState(false)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const [installHandled, setInstallHandled] = useState(false)
+
+  async function changePush(kind: PushKind, enabled: boolean) {
+    const result = await setPushKind(kind, enabled, {
+      callNotifications: settings.callNotifications,
+      messageNotifications: settings.gentleNotifications,
+    })
+    if (result === 'blocked') {
+      setNotificationsBlocked(true)
+      return
+    }
+    if (result !== 'ok') return
+    setNotificationsBlocked(false)
+    update(kind === 'call' ? 'callNotifications' : 'gentleNotifications', enabled)
+  }
 
   async function copyInvite() {
     try {
@@ -290,7 +305,7 @@ export default function Settings({
               <Toggle
                 label="Gentle notifications"
                 checked={settings.gentleNotifications}
-                onChange={(next) => update('gentleNotifications', next)}
+                onChange={(next) => void changePush('message', next)}
               />
             </div>
             {pushSupported() && (
@@ -298,20 +313,17 @@ export default function Settings({
                 <div>
                   <p className="font-bold">Call notifications</p>
                   <p className={noteText}>Incoming calls, even when the app is closed.</p>
+                  {notificationsBlocked && (
+                    <p className={noteText}>
+                      Notifications are blocked in Firefox. Allow them in Firefox Settings &gt;
+                      Privacy &gt; Notifications for honden.onrender.com, then try again.
+                    </p>
+                  )}
                 </div>
                 <Toggle
                   label="Call notifications"
                   checked={settings.callNotifications}
-                  onChange={(next) => {
-                    void (async () => {
-                      if (next) {
-                        if (await enableCallPush()) update('callNotifications', true)
-                      } else {
-                        await disableCallPush()
-                        update('callNotifications', false)
-                      }
-                    })()
-                  }}
+                  onChange={(next) => void changePush('call', next)}
                 />
               </div>
             )}
