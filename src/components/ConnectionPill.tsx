@@ -29,6 +29,11 @@ const config: Record<
     dot: 'bg-warm-amber',
     className: 'border-warm-amber/40 bg-warm-amber/20 text-warm-charcoal',
   },
+  unreachable: {
+    label: 'Cannot reach server, tap Retry',
+    dot: 'bg-soft-red',
+    className: 'border-soft-red/30 bg-soft-red/10 text-soft-red',
+  },
   disconnected: {
     label: 'Disconnected',
     dot: 'bg-soft-red',
@@ -36,15 +41,37 @@ const config: Record<
   },
 }
 
-export default function ConnectionPill({ status }: { status: ConnectionStatus }) {
+type Props = {
+  status: ConnectionStatus
+  onRetry?: () => void
+}
+
+export default function ConnectionPill({ status, onRetry }: Props) {
   const { label, dot, className } = config[status]
+  const pill = `inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`
+  const marker = <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+
+  if (status === 'unreachable') {
+    return (
+      <span role="alert" aria-live="assertive" className={`${pill} flex-wrap`}>
+        {marker}
+        <span>{label}</span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="ml-0.5 rounded-full border border-soft-red/40 px-2 py-0.5 text-[10px] font-bold hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+          >
+            Retry
+          </button>
+        )}
+      </span>
+    )
+  }
+
   return (
-    <span
-      role="status"
-      aria-live="polite"
-      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`}
-    >
-      <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden="true" />
+    <span role="status" aria-live="polite" className={`${pill} whitespace-nowrap`}>
+      {marker}
       {label}
     </span>
   )

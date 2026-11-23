@@ -2,10 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   advanceCursor,
+  CONNECT_TIMEOUT_MS,
   isAfterCursor,
   mergeById,
   reconnectDelay,
+  WAKE_INTERVAL_MS,
 } from '../src/transport/reliability'
+
+test('connection failure surfaces after 10s and wake stays under Render idle limit', () => {
+  assert.equal(CONNECT_TIMEOUT_MS, 10000)
+  assert.ok(WAKE_INTERVAL_MS > 0 && WAKE_INTERVAL_MS < 15 * 60 * 1000)
+})
 
 test('reconnectDelay backs off and caps at 30s', () => {
   assert.equal(reconnectDelay(0, () => 0.5), 1000)

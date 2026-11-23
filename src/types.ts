@@ -3,6 +3,7 @@ export type ConnectionStatus =
   | 'connecting'
   | 'waking'
   | 'reconnecting'
+  | 'unreachable'
   | 'syncing'
   | 'live'
 

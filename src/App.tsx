@@ -36,8 +36,8 @@ import {
   subscribeChannel,
 } from './transport/channel'
 import type { ChannelStatus } from './transport/channel'
-import { startMessageSocket } from './transport/messageSocket'
-import { advanceCursor, type Cursor } from './transport/reliability'
+import { startMessageSocket, type MessageSocketController } from './transport/messageSocket'
+import { advanceCursor, type Cursor, WAKE_INTERVAL_MS } from './transport/reliability'
 import {
   clearChatStorage,
   formatTime,
@@ -61,6 +61,7 @@ import {
   authHeaders,
   authenticatedWs,
   getSignalToken,
+  wakeServer,
   type CallKind,
   type SignalEvent,
 } from './api/client'
@@ -445,6 +446,7 @@ export default function App() {
   const flushingOutbox = useRef(false)
   const syncCursorRef = useRef<Cursor | null>(null)
   const syncAllRef = useRef<() => Promise<void>>(async () => undefined)
+  const socketRef = useRef<MessageSocketController | null>(null)
   const deepLinkHandled = useRef(false)
   const [user, setUser] = useState<AccountUser>(loadAccount)
   const [username, setUsername] = useState(ownUsername)
@@ -544,11 +546,15 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void fetch(apiUrl('/health'))
-      .then((response) => {
-        if (response.ok) clearOffline()
+    const ping = () => {
+      void wakeServer().then((ok) => {
+        if (ok) clearOffline()
       })
-      .catch(() => undefined)
+    }
+    ping()
+    // Render Free suspends after 15 minutes idle; keep it warm before that.
+    const timer = window.setInterval(ping, WAKE_INTERVAL_MS)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => subscribeChannel(() => setStatus(getChannelStatus())), [])
@@ -623,6 +629,8 @@ export default function App() {
         setConnection(next)
         if (next === 'live') void flushOutbox()
         if (next === 'disconnected') callManager.notifySignalingClosed()
+        // A sleeping Render instance needs an HTTP request to wake up.
+        if (next === 'waking' || next === 'unreachable') void wakeServer()
       },
       onSync: () => syncAllRef.current(),
       onFrame: (frame) => {
@@ -678,8 +686,17 @@ export default function App() {
     callManager.setSignalingSender((event) =>
       controller.send({ ...event, peerName: `@${ownUsername}` }),
     )
-    return () => controller.close()
+    socketRef.current = controller
+    return () => {
+      socketRef.current = null
+      controller.close()
+    }
   }, [authToken, identity])
+
+  function retryConnection() {
+    void wakeServer()
+    socketRef.current?.restart()
+  }
 
   const activeRelayUrl = relayUrl(invite, settings.relayUrl)
 
@@ -1142,6 +1159,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
             onOpenThread={openThread}
             onNewThread={newThread}
@@ -1185,7 +1203,7 @@ export default function App() {
                 </>
               )}
             </div>
-            <ConnectionPill status={connection} />
+            <ConnectionPill status={connection} onRetry={retryConnection} />
             <div className="hidden md:block">
               <UserChip
                 user={user}
@@ -1507,6 +1525,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
             onOpenThread={openThread}
             onNewThread={newThread}

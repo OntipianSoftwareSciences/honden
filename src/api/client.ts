@@ -85,10 +85,31 @@ function getSignalId() {
   return id
 }
 
-const renderOrigin = 'https://honden.onrender.com'
+export const RELEASE_ORIGIN = 'https://honden.onrender.com'
+
+export function isTauriRuntime(): boolean {
+  if (typeof window === 'undefined') return false
+  // The hosted web app must always keep talking to its own origin.
+  if (window.location.hostname === 'honden.onrender.com') return false
+  // isTauri() depends on an injected init script; older Android WebViews can
+  // miss it, so also accept the IPC globals Tauri always installs.
+  return isTauri() || '__TAURI_INTERNALS__' in window || '__TAURI__' in window
+}
 
 export function remoteOrigin(): string {
-  return isTauri() ? renderOrigin : window.location.origin
+  return isTauriRuntime() ? RELEASE_ORIGIN : window.location.origin
+}
+
+/** Wake Render Free before its 15-minute idle suspend. */
+export async function wakeServer(): Promise<boolean> {
+  try {
+    const response = await fetch(`${remoteOrigin()}/health?t=${Date.now()}`, {
+      cache: 'no-store',
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
 
 export function apiUrl(path: string): string {

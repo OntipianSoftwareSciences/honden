@@ -1,5 +1,5 @@
 import type { ConnectionStatus } from '../types'
-import { reconnectDelay } from './reliability'
+import { CONNECT_TIMEOUT_MS, reconnectDelay } from './reliability'
 
 export type MessageFrame = {
   type?: string
@@ -36,12 +36,16 @@ export function startMessageSocket(
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined
   let pongTimer: ReturnType<typeof setTimeout> | undefined
   let stableTimer: ReturnType<typeof setTimeout> | undefined
+  let connectTimer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
   let attempt = 0
   let authReady = false
   let syncing = false
   let awaitingPong = false
   let lastFrameAt = Date.now()
+  // Once we report failure, keep the honest state visible while background
+  // retries continue with backoff. A manual Retry clears this.
+  let reportedUnreachable = false
 
   function setStatus(status: ConnectionStatus): void {
     handlers.onStatus(status)
@@ -65,11 +69,35 @@ export function startMessageSocket(
     }
   }
 
+  function clearConnectTimer(): void {
+    if (connectTimer) {
+      clearTimeout(connectTimer)
+      connectTimer = undefined
+    }
+  }
+
+  function markUnreachable(): void {
+    if (stopped) return
+    clearConnectTimer()
+    reportedUnreachable = true
+    const current = socket
+    socket = undefined
+    if (current) {
+      current.onopen = null
+      current.onmessage = null
+      current.onerror = null
+      current.onclose = null
+      if (current.readyState < WebSocket.CLOSING) current.close()
+    }
+    setStatus('unreachable')
+  }
+
   function scheduleReconnect(): void {
     clearHeartbeat()
+    clearConnectTimer()
     if (stopped || reconnectTimer) return
     attempt += 1
-    setStatus(attempt >= 3 ? 'waking' : 'reconnecting')
+    if (!reportedUnreachable) setStatus(attempt >= 3 ? 'waking' : 'reconnecting')
     const delay = reconnectDelay(attempt - 1)
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined
@@ -120,6 +148,8 @@ export function startMessageSocket(
     }
     if (stopped || !authReady || socket?.readyState !== WebSocket.OPEN) return
     attempt = 0
+    reportedUnreachable = false
+    clearConnectTimer()
     console.info('[ws] sync complete; connection ready')
     setStatus('live')
     if (stableTimer) clearTimeout(stableTimer)
@@ -130,11 +160,12 @@ export function startMessageSocket(
 
   function connect(): void {
     if (stopped) return
+    clearConnectTimer()
     authReady = false
     syncing = false
     awaitingPong = false
     lastFrameAt = Date.now()
-    setStatus(attempt === 0 ? 'connecting' : 'reconnecting')
+    if (!reportedUnreachable) setStatus(attempt === 0 ? 'connecting' : 'reconnecting')
 
     let next: WebSocket
     try {
@@ -144,6 +175,14 @@ export function startMessageSocket(
       return
     }
     socket = next
+    // Android WebViews can leave a handshake stuck in CONNECTING forever.
+    // Fail over to an honest error state after 10 seconds.
+    connectTimer = setTimeout(() => {
+      if (stopped || socket !== next || authReady) return
+      console.warn('[ws] connection timed out after 10s')
+      markUnreachable()
+      scheduleReconnect()
+    }, CONNECT_TIMEOUT_MS)
 
     next.onopen = () => {
       if (stopped || socket !== next) return
@@ -192,6 +231,7 @@ export function startMessageSocket(
     if (stopped) return
     clearReconnect()
     attempt = 0
+    reportedUnreachable = false
     if (!socket || socket.readyState >= WebSocket.CLOSING) connect()
   }
 
@@ -210,6 +250,7 @@ export function startMessageSocket(
       window.removeEventListener('offline', onOffline)
       clearReconnect()
       clearHeartbeat()
+      clearConnectTimer()
       if (stableTimer) clearTimeout(stableTimer)
       const current = socket
       socket = undefined
@@ -219,7 +260,9 @@ export function startMessageSocket(
       if (stopped) return
       currentUrl = nextUrl
       clearReconnect()
+      clearConnectTimer()
       attempt = 0
+      reportedUnreachable = false
       const current = socket
       socket = undefined
       if (current) {

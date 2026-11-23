@@ -7,6 +7,7 @@ type Props = {
   threads: Thread[]
   messages: ChatMessage[]
   connection: ConnectionStatus
+  onRetry: () => void
   onOpenSettings: () => void
   onOpenThread: (id: string) => void
   onNewThread: (name: string) => void
@@ -18,6 +19,7 @@ export default function EmptyChat({
   threads,
   messages,
   connection,
+  onRetry,
   onOpenSettings,
   onOpenThread,
   onNewThread,
@@ -43,7 +45,7 @@ export default function EmptyChat({
             🍯
           </span>
           <h2 className="readable-text whitespace-nowrap font-bold text-warm-charcoal">HonDen</h2>
-          <ConnectionPill status={connection} />
+          <ConnectionPill status={connection} onRetry={onRetry} />
           {!compact && (
             <button
               type="button"

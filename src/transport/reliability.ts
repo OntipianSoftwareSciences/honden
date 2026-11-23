@@ -1,5 +1,9 @@
 export const RECONNECT_BASE_MS = 1000
 export const RECONNECT_MAX_MS = 30000
+/** Show a failure state instead of hanging on "Reconnecting" forever. */
+export const CONNECT_TIMEOUT_MS = 10000
+/** Ping Render Free before its 15-minute idle suspend. */
+export const WAKE_INTERVAL_MS = 14 * 60 * 1000
 
 export type Cursor = { time: string; id: string }
 
