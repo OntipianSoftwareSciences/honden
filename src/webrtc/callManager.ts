@@ -149,6 +149,7 @@ const envTurnUrls = parseIceUrls(
   import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL,
 )
 let cachedIceServers: RTCIceServer[] | null = null
+let useRelayOnly = false
 
 // Render service env vars are available to the server at runtime, but Vite only
 // bakes VITE_* vars into the bundle at build time. Prefer the runtime config so
@@ -217,7 +218,12 @@ async function getIceServers(): Promise<RTCIceServer[]> {
       username: envUsername,
       credential: envCredential,
     })
+    // Chrome stops ICE gathering as soon as a host/srflx pair connects, which
+    // can leave a configured TURN server completely unused. Send all media
+    // through the configured relay so it is actually exercised.
+    useRelayOnly = true
   } else {
+    useRelayOnly = false
     if (turnUrls.length > 0) {
       console.warn('[call] TURN URL set but username/credential missing, using default')
     }
@@ -518,7 +524,9 @@ class CallManager {
     if (this.pc) return this.pc
 
     const iceServers = await getIceServers()
-    const pc = new RTCPeerConnection({ iceServers })
+    const config: RTCConfiguration = { iceServers }
+    if (useRelayOnly) config.iceTransportPolicy = 'relay'
+    const pc = new RTCPeerConnection(config)
     this.pc = pc
     this.remote = new MediaStream()
 
