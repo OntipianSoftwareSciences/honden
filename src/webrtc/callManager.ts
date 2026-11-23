@@ -25,16 +25,82 @@ export type CallSnapshot = {
 
 type SignalingSender = (event: SignalEvent) => void
 
-const callErrorCopy =
-  'Something went wrong on our side. Nothing was sent. Try again in a moment.'
-const mediaErrorCopy =
-  'Camera or microphone is blocked or already in use. Check browser permissions and try again.'
+type CallStage =
+  | 'getUserMedia'
+  | 'peer connection'
+  | 'signaling'
+  | 'offer'
+  | 'answer'
+  | 'ice'
+  | 'camera switch'
+
+const stageCopy: Record<CallStage, string> = {
+  getUserMedia: 'Call failed while getting the microphone or camera (getUserMedia)',
+  'peer connection': 'Call failed while starting the peer connection (RTCPeerConnection)',
+  signaling: 'Call failed during call signaling (ICE/answer)',
+  offer: 'Call failed while creating or sending the offer (offer)',
+  answer: 'Call failed while creating or sending the answer (answer)',
+  ice: 'Call failed while handling a network candidate (ICE)',
+  'camera switch': 'Call failed while switching cameras (getUserMedia)',
+}
+
+const plainErrorNames: Record<string, string> = {
+  AbortError: 'device stopped unexpectedly',
+  DataCloneError: 'data could not be copied',
+  EncodingError: 'encoding failed',
+  InvalidModificationError: 'call state could not be changed',
+  InvalidStateError: 'call state was not ready',
+  NetworkError: 'network error',
+  NotAllowedError: 'permission denied',
+  NotFoundError: 'no device found',
+  NotReadableError: 'device is busy or unreadable',
+  OperationError: 'the browser operation failed',
+  OverconstrainedError: 'requested device setting is unavailable',
+  QuotaExceededError: 'too much data',
+  SecurityError: 'blocked by browser security settings',
+  TypeError: 'invalid or unsupported request',
+  VersionError: 'incompatible version',
+}
+
+function errorDetails(error: unknown): { name: string; message: string } {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return { name: error.name || 'DOMException', message: error.message }
+  }
+  if (error instanceof Error) {
+    return { name: error.name || 'Error', message: error.message }
+  }
+  if (error && typeof error === 'object') {
+    const candidate = error as { name?: unknown; message?: unknown }
+    return {
+      name:
+        typeof candidate.name === 'string' && candidate.name
+          ? candidate.name
+          : 'UnknownError',
+      message:
+        typeof candidate.message === 'string' ? candidate.message : 'unknown failure',
+    }
+  }
+  return { name: 'UnknownError', message: 'unknown failure' }
+}
+
+function callErrorText(stage: CallStage, error: unknown): string {
+  const { name, message } = errorDetails(error)
+  // Log only the error name. Never log error messages, SDP, or chat content.
+  console.warn(`[call] ${stage} failed: ${name}`)
+  const plain = plainErrorNames[name] ?? 'unexpected error'
+  return `${stageCopy[stage]} — ${name} (${plain}): ${message || 'no message provided'}`
+}
+
+function logErrorName(label: string, error: unknown) {
+  const { name } = errorDetails(error)
+  console.warn(`[call] ${label}: ${name}`)
+}
 
 const iceServers: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
 ]
 
-if (import.meta.env.VITE_TURN_URL) {
+if (import.meta.env?.VITE_TURN_URL) {
   iceServers.push({
     urls: import.meta.env.VITE_TURN_URL,
     username: import.meta.env.VITE_TURN_USERNAME || undefined,
@@ -156,7 +222,8 @@ class CallManager {
       }
       try {
         await this.pc.addIceCandidate(candidate)
-      } catch {
+      } catch (error) {
+        logErrorName('ice candidate failed', error)
         continue
       }
     }
@@ -266,11 +333,8 @@ class CallManager {
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
           }
         : { audio: true, video: false }
-    try {
-      this.local = await navigator.mediaDevices.getUserMedia(constraints)
-    } catch {
-      throw new Error(mediaErrorCopy)
-    }
+    // Let the browser's exact DOMException (name and message) reach the caller.
+    this.local = await navigator.mediaDevices.getUserMedia(constraints)
     await this.refreshCameras()
     return this.local
   }
@@ -299,8 +363,8 @@ class CallManager {
 
     try {
       await this.ensureLocalStream()
-    } catch {
-      this.fail(callErrorCopy)
+    } catch (error) {
+      this.fail(callErrorText('getUserMedia', error))
       return
     }
 
@@ -338,17 +402,20 @@ class CallManager {
     if (this.state !== 'incoming') return
     this.markConnecting()
 
+    let stage: CallStage = 'getUserMedia'
     try {
       const stream = await this.ensureLocalStream()
+      stage = 'peer connection'
       const pc = this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
+      stage = 'signaling'
       this.send({
         type: 'call:accept',
         to: this.peerId,
         callId: this.callId,
       })
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : callErrorCopy)
+      this.fail(callErrorText(stage, error))
     }
   }
 
@@ -372,10 +439,13 @@ class CallManager {
 
     this.markConnecting()
 
+    let stage: CallStage = 'getUserMedia'
     try {
       const stream = await this.ensureLocalStream()
+      stage = 'peer connection'
       const pc = this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
+      stage = 'offer'
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
       this.send({
@@ -385,7 +455,7 @@ class CallManager {
         sdp: pc.localDescription ?? offer,
       })
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : callErrorCopy)
+      this.fail(callErrorText(stage, error))
     }
   }
 
@@ -395,10 +465,13 @@ class CallManager {
     }
     if (event.from) this.peerId = event.from
 
+    let stage: CallStage = 'peer connection'
     try {
       const pc = this.ensurePeerConnection()
+      stage = 'signaling'
       await pc.setRemoteDescription(event.sdp)
       await this.flushIce()
+      stage = 'answer'
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
       console.info('[call] answer sent', { callId: this.callId, to: this.peerId })
@@ -409,7 +482,7 @@ class CallManager {
         sdp: pc.localDescription ?? answer,
       })
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : callErrorCopy)
+      this.fail(callErrorText(stage, error))
     }
   }
 
@@ -417,12 +490,13 @@ class CallManager {
     if (event.callId !== this.callId || !event.sdp) {
       return
     }
+    const stage: CallStage = 'signaling'
     try {
       console.info('[call] answer received', { callId: this.callId, from: event.from })
       await this.pc?.setRemoteDescription(event.sdp)
       await this.flushIce()
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : callErrorCopy)
+      this.fail(callErrorText(stage, error))
     }
   }
 
@@ -436,7 +510,8 @@ class CallManager {
     }
     try {
       await this.pc.addIceCandidate(event.candidate)
-    } catch {
+    } catch (error) {
+      logErrorName('ice candidate failed', error)
       this.pendingIce.push(event.candidate)
     }
   }
@@ -547,9 +622,9 @@ class CallManager {
       this.error = ''
       this.showCameraLabel(label)
       this.emit()
-    } catch {
+    } catch (error) {
       newStream?.getVideoTracks().forEach((track) => track.stop())
-      this.error = callErrorCopy
+      this.error = callErrorText('camera switch', error)
       this.emit()
     }
   }
