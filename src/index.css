@@ -4,6 +4,7 @@
 @theme inline {
   --color-heart-pink: var(--heart-pink);
   --color-deep-rose: var(--deep-rose);
+  --color-pink-ink: var(--pink-ink);
   --color-warm-cream: var(--warm-cream);
   --color-soft-blush: var(--soft-blush);
   --color-warm-charcoal: var(--warm-charcoal);
@@ -70,6 +71,28 @@
 }
 
 @layer utilities {
+  .readable-text {
+    font-size: 14px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .message-text {
+    font-size: 15px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .preview-text {
+    font-size: 14px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   .screen-fade {
     animation: screen-in 150ms ease-out both;
   }
@@ -253,3 +276,87 @@
     transform: translate(-50%, -6px);
   }
 }
+
+/* Zoom-aware chat shell: 1 / 2 / 3 columns, with the thread as the only internal scroller. */
+.chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.chat-layout__chat,
+.chat-layout__list,
+.chat-layout__details {
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-layout__list,
+.chat-layout__details {
+  display: none;
+}
+
+.chat-layout[data-columns='2'] {
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+}
+
+.chat-layout[data-columns='3'] {
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(260px, 320px);
+}
+
+.chat-layout[data-columns='2'] .chat-layout__list,
+.chat-layout[data-columns='3'] .chat-layout__list,
+.chat-layout[data-columns='3'] .chat-layout__details {
+  display: block;
+}
+
+.chat-layout[data-columns='2'][data-details='open'] .chat-layout__details {
+  display: block;
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: 30;
+  width: min(320px, 85vw);
+  box-shadow: -8px 0 24px rgba(43, 35, 48, 0.16);
+}
+
+.chat-layout p,
+.chat-layout span,
+.chat-layout h1,
+.chat-layout h2,
+.chat-layout h3,
+.chat-layout li {
+  overflow-wrap: anywhere;
+}
+
+/* No real text drops below 12px; chat surfaces use a 14px floor. */
+[class*='text-[10px]'],
+[class*='text-[11px]'] {
+  font-size: 12px;
+}
+
+.chat-layout [class*='text-[10px]'],
+.chat-layout [class*='text-[11px]'],
+.chat-layout [class*='text-[12px]'],
+.chat-layout [class*='text-[13px]'],
+.chat-layout [class*='text-[0.6875rem]'],
+.chat-layout [class*='text-[0.8125rem]'],
+.chat-layout [class*='text-xs'] {
+  font-size: 14px;
+}
+
+/* Heart Pink stays an accent/button colour; text uses a higher-contrast pink ink. */
+.text-heart-pink,
+.text-deep-rose {
+  color: var(--pink-ink) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bg-white {
+    background-color: #2A2030 !important;
+  }
+}
+

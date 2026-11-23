@@ -11,6 +11,7 @@ type Props = {
   onOpenThread: (id: string) => void
   onNewThread: (name: string) => void
   onAddUser: () => void
+  compact?: boolean
 }
 
 export default function EmptyChat({
@@ -21,6 +22,7 @@ export default function EmptyChat({
   onOpenThread,
   onNewThread,
   onAddUser,
+  compact = false,
 }: Props) {
   const [newMessage, setNewMessage] = useState(false)
   const [name, setName] = useState('')
@@ -34,27 +36,29 @@ export default function EmptyChat({
   }
 
   return (
-    <main className="screen-fade h-full min-h-screen w-full bg-warm-cream">
-      <div className="flex min-h-screen w-full flex-col border-0 bg-white">
-        <header className="flex items-center gap-3 border-b border-border px-6 py-4">
-          <span className="flex h-8 w-8 items-center justify-center rounded-2xl bg-soft-blush text-lg" aria-hidden="true">
+    <main className={`screen-fade h-full w-full bg-warm-cream ${compact ? '' : 'min-h-screen'}`}>
+      <div className={`flex h-full w-full flex-col border-0 bg-white ${compact ? '' : 'min-h-screen'}`}>
+        <header className={`flex shrink-0 items-center gap-3 border-b border-border ${compact ? 'px-4 py-3' : 'px-6 py-4'}`}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg" aria-hidden="true">
             🍯
           </span>
-          <h2 className="text-base font-bold text-warm-charcoal">HonDen</h2>
+          <h2 className="readable-text font-bold text-warm-charcoal">HonDen</h2>
           <ConnectionPill status={connection} />
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="ml-auto rounded-xl border border-border px-4 py-2 text-sm font-bold text-deep-rose hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
-          >
-            Settings
-          </button>
+          {!compact && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="ml-auto rounded-xl border border-border px-4 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              Settings
+            </button>
+          )}
         </header>
 
-        <section className="flex-1 px-6 py-8 sm:px-10">
-          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h1 className="text-[20px] font-bold text-warm-charcoal">Your conversations</h1>
-            <div className="flex flex-col gap-2 sm:flex-row">
+        <section className={compact ? 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4' : 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-8 sm:px-10'}>
+          <div className={`flex flex-col gap-3 ${compact ? 'mb-4' : 'mb-6 sm:flex-row sm:items-center sm:justify-between'}`}>
+            <h1 className={`font-bold text-warm-charcoal ${compact ? 'readable-text' : 'text-[20px]'}`}>Your conversations</h1>
+            <div className={`flex flex-col gap-2 ${compact ? 'hidden' : 'sm:flex-row'}`}>
               <button
                 type="button"
                 onClick={() => setNewMessage(true)}
@@ -94,22 +98,22 @@ export default function EmptyChat({
                   key={thread.id}
                   type="button"
                   onClick={() => onOpenThread(thread.id)}
-                  className="flex w-full items-start gap-4 rounded-2xl px-5 py-6 text-left hover:bg-warm-cream focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                  className={`flex w-full items-start gap-3 rounded-2xl text-left hover:bg-warm-cream focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink ${compact ? 'px-3 py-3' : 'px-5 py-6'}`}
                 >
                   <span
                     aria-hidden="true"
-                    className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-soft-blush text-lg font-bold text-deep-rose"
+                    className={`flex shrink-0 items-center justify-center rounded-full bg-soft-blush font-bold text-pink-ink ${compact ? 'h-10 w-10 text-base' : 'h-14 w-14 text-lg'}`}
                   >
                     {initial}
                   </span>
                   <span className="min-w-0 flex-1 space-y-1">
-                    <span className="block truncate text-base font-bold text-warm-charcoal">
+                    <span className="block break-words text-base font-bold text-warm-charcoal">
                       {label}
                     </span>
-                    <span className="block truncate text-[13px] text-soft-grey">
+                    <span className="readable-text block break-words text-soft-grey">
                       {thread.username === 'everyone' ? 'Everyone in HonDen' : `@${thread.username}`}
                     </span>
-                    <span className="mt-2 block truncate text-[13px] text-soft-grey">
+                    <span className="preview-text mt-1 block text-soft-grey">
                       {previewText}
                     </span>
                   </span>
@@ -119,11 +123,13 @@ export default function EmptyChat({
           </div>
         </section>
 
-        <div className="border-t border-border px-6 py-4">
-          <p className="text-center text-sm text-soft-grey">
-            Start a conversation with someone you care about.
-          </p>
-        </div>
+        {!compact && (
+          <div className="border-t border-border px-6 py-4">
+            <p className="text-center text-sm text-soft-grey">
+              Start a conversation with someone you care about.
+            </p>
+          </div>
+        )}
       </div>
 
       {newMessage && (

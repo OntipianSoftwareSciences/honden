@@ -1,6 +1,7 @@
 :root {
   --heart-pink: #FF6B9D;
   --deep-rose: #D94F7A;
+  --pink-ink: #B8325B;
   --warm-cream: #FFF7F2;
   --soft-blush: #FFE9F0;
   --warm-charcoal: #2B2330;
@@ -16,4 +17,17 @@
 
 html[data-large-text='true'] {
   --text-scale: 1.2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --warm-cream: #1E1620;
+    --warm-charcoal: #FFF7F2;
+    --soft-grey: #D8CBD3;
+    --soft-blush: #3A2634;
+    --deep-rose: #FF9BBE;
+    --pink-ink: #FF9BBE;
+    --border: #4A3A48;
+    --hm-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  }
 }

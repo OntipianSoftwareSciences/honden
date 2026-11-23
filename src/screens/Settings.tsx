@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { BeforeInstallPromptEvent } from '../hooks/useInstallPrompt'
 import type { Settings, UpdateSetting } from '../hooks/useSettings'
+import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
@@ -8,6 +9,7 @@ import HeartMark from '../components/HeartMark'
 type Props = {
   settings: Settings
   update: UpdateSetting
+  layout: LayoutInfo
   onBack: () => void
   relayState: RelayState
   peerCount: number
@@ -22,6 +24,7 @@ const noteText = 'text-[0.8125rem] text-soft-grey'
 export default function Settings({
   settings,
   update,
+  layout,
   onBack,
   relayState,
   peerCount,
@@ -84,7 +87,14 @@ export default function Settings({
 
         <div className="flex-1 space-y-6 px-6 py-8">
           <section className="rounded-2xl border border-border bg-warm-cream p-6">
-            <h2 className="mb-2 text-sm font-bold text-deep-rose">Install on Android</h2>
+            <h2 className="mb-2 text-sm font-bold text-pink-ink">Layout</h2>
+            <p className="readable-text break-words text-warm-charcoal" data-testid="layout-info">
+              {layout.label}
+            </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-pink-ink">Install on Android</h2>
             <p className="mb-4 text-base">
               Install HonDen on your phone, so it's always there when you need it.
             </p>

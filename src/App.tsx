@@ -9,6 +9,7 @@ import EmptyChat from './screens/EmptyChat'
 import AddUser from './screens/AddUser'
 import Settings from './screens/Settings'
 import { useSettings } from './hooks/useSettings'
+import { useLayoutInfo } from './hooks/useLayoutInfo'
 import { parseDeepLink } from './deepLink'
 import { useTouchBounce } from './hooks/useTouchBounce'
 import { useInstallPrompt } from './hooks/useInstallPrompt'
@@ -365,6 +366,8 @@ export default function App() {
     return localStorage.getItem('honden.username') && getSignalToken() ? 'chats' : 'onboarding'
   })
   const { settings, update } = useSettings()
+  const layout = useLayoutInfo()
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [threads, setThreads] = useState<Thread[]>(loadThreads)
   const [messages, setMessages] = useState<ChatMessage[]>(loadChatBackup)
   const [blockedGlobalSenders, setBlockedGlobalSenders] = useState<string[]>(loadBlockedGlobalSenders)
@@ -986,6 +989,8 @@ export default function App() {
     }
   }
 
+  const visibleThreads = settings.showGlobalChat ? [globalThread, ...threads] : threads
+
   let screenView = (
     <Onboarding onDone={(name, loginNotice, token) => void finishLogin(name, loginNotice, token)} />
   )
@@ -1009,6 +1014,7 @@ export default function App() {
       <Settings
         settings={settings}
         update={update}
+        layout={layout}
         onBack={() => setScreen('chats')}
         relayState={status.relayState}
         peerCount={status.peerCount}
@@ -1031,14 +1037,33 @@ export default function App() {
         (message) =>
           !isGlobal || !blockedGlobalSenders.includes(normalizeUsername(message.senderId)),
       )
+    const memberNames = isGlobal
+      ? Array.from(new Set(visible.map((message) => message.senderId).filter(Boolean)))
+      : []
     const mentionMatch = /(^|\s)@([a-z0-9_]*)$/.exec(draft)
     const mentionCandidates = mentionMatch
       ? localPeople.filter((person) => person.username.startsWith(mentionMatch[2]))
       : []
 
     screenView = (
-      <div className="flex h-[100dvh] w-full overflow-hidden bg-warm-cream text-warm-charcoal">
-        <div className="flex min-w-0 flex-1 flex-col">
+      <div
+        className="chat-layout h-[100dvh] w-full bg-warm-cream text-warm-charcoal"
+        data-columns={layout.columns}
+        data-details={detailsOpen ? 'open' : 'closed'}
+      >
+        <aside className="chat-layout__list border-r border-border bg-white" aria-label="Your conversations">
+          <EmptyChat
+            compact
+            threads={visibleThreads}
+            messages={messages}
+            connection={connection}
+            onOpenSettings={() => setScreen('settings')}
+            onOpenThread={openThread}
+            onNewThread={newThread}
+            onAddUser={() => setScreen('addUser')}
+          />
+        </aside>
+        <div className="chat-layout__chat flex min-w-0 flex-col">
           <header className="flex shrink-0 items-center gap-3 border-b border-border bg-white px-4 py-3">
             <button
               type="button"
@@ -1049,7 +1074,7 @@ export default function App() {
               ←
             </button>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-warm-charcoal">
+              <p className="readable-text break-words font-semibold text-warm-charcoal">
                 {thread?.name ?? 'Someone'}
               </p>
               {isGlobal ? (
@@ -1079,6 +1104,16 @@ export default function App() {
               >
                 <Phone size={16} className="text-heart-pink" />
                 Call
+              </button>
+            )}
+            {layout.columns === 2 && (
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((open) => !open)}
+                aria-expanded={detailsOpen}
+                className="min-h-11 rounded-xl border border-border px-3 text-sm font-bold text-pink-ink transition hover:bg-soft-blush"
+              >
+                Details
               </button>
             )}
           </header>
@@ -1122,7 +1157,7 @@ export default function App() {
                       : 'border-border bg-white'
                   }`}
                 >
-                  <p className="mb-1 text-[13px] font-semibold text-soft-grey">
+                  <p className="readable-text mb-1 font-semibold text-soft-grey">
                     {message.senderId}
                   </p>
                   {message.deleted ? (
@@ -1134,7 +1169,7 @@ export default function App() {
                       className="max-h-64 rounded-xl border border-border object-cover"
                     />
                   ) : (
-                    <p className="whitespace-pre-wrap text-base text-warm-charcoal">
+                    <p className="message-text whitespace-pre-wrap text-warm-charcoal">
                       {message.text}
                     </p>
                   )}
@@ -1272,44 +1307,75 @@ export default function App() {
             </div>
           </div>
         </div>
-        <aside className="hidden w-[280px] shrink-0 border-l border-border bg-white p-4 lg:block">
+        <aside
+          className="chat-layout__details touch-scroll overflow-y-auto overflow-x-hidden border-l border-border bg-white p-4"
+          aria-label="Chat details"
+        >
           <div className="flex items-center gap-3">
-            <div
-              className="flex h-11 w-11 items-center justify-center rounded-xl text-sm font-bold text-warm-charcoal"
-              style={{ backgroundColor: user.avatarColor }}
-            >
-              {user.displayName.slice(0, 2).toUpperCase()}
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-soft-blush text-base font-bold text-pink-ink">
+              {(thread?.name ?? '#').charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-warm-charcoal">
-                {user.displayName}
+              <p className="readable-text break-words font-semibold text-warm-charcoal">
+                {thread?.name ?? 'Someone'}
               </p>
-              <p className="truncate text-[13px] text-soft-grey">@{user.username}</p>
+              <p className="readable-text break-words text-soft-grey">
+                @{thread?.username ?? 'someone'}
+              </p>
             </div>
           </div>
-          <p className="mt-4 text-[13px] text-soft-grey">{user.status}</p>
-          <p className="mt-1 text-sm leading-relaxed text-soft-grey">
-            {user.bio || 'No bio set yet.'}
+          <p className="readable-text mt-4 flex items-center gap-2 text-soft-grey">
+            <span
+              aria-hidden="true"
+              className={`h-2 w-2 shrink-0 rounded-full ${status.peerCount > 0 ? 'bg-leaf-green' : 'bg-warm-amber'}`}
+            />
+            {status.peerCount > 0 ? 'Online now' : 'Offline'}
           </p>
+
+          <h3 className="readable-text mt-6 font-bold text-warm-charcoal">Bio</h3>
+          <p className="readable-text mt-1 break-words text-soft-grey">
+            {isGlobal ? globalNotice : 'No bio shared yet.'}
+          </p>
+
+          <h3 className="readable-text mt-6 font-bold text-warm-charcoal">Shared info</h3>
+          <ul className="readable-text mt-1 space-y-1 text-soft-grey">
+            <li>{visible.length} messages in this conversation</li>
+            <li>Messages are end-to-end encrypted</li>
+            {isGlobal && <li>Everyone in HonDen can see this channel</li>}
+          </ul>
+
+          {isGlobal && (
+            <>
+              <h3 className="readable-text mt-6 font-bold text-warm-charcoal">Members</h3>
+              <ul className="readable-text mt-1 space-y-1 text-soft-grey">
+                {memberNames.length > 0 ? (
+                  memberNames.map((name) => <li key={name}>@{name}</li>)
+                ) : (
+                  <li>No members have posted yet</li>
+                )}
+              </ul>
+            </>
+          )}
+
           <div className="mt-6 space-y-2">
             <button
               type="button"
               onClick={() => setModal('profile')}
-              className="w-full rounded-xl border border-border bg-white px-3 py-2 text-left text-sm text-warm-charcoal transition hover:bg-warm-cream"
+              className="w-full rounded-xl border border-border px-3 py-2 text-left text-sm text-warm-charcoal transition hover:bg-warm-cream"
             >
-              Edit profile
+              Your profile
             </button>
             <button
               type="button"
               onClick={() => setModal('security')}
-              className="w-full rounded-xl border border-border bg-white px-3 py-2 text-left text-sm text-warm-charcoal transition hover:bg-warm-cream"
+              className="w-full rounded-xl border border-border px-3 py-2 text-left text-sm text-warm-charcoal transition hover:bg-warm-cream"
             >
               Sessions & security
             </button>
             <button
               type="button"
               onClick={() => void blockContact(threadId)}
-              className="w-full rounded-xl border border-soft-red bg-white px-3 py-2 text-left text-sm text-soft-red transition hover:bg-soft-blush"
+              className="w-full rounded-xl border border-soft-red px-3 py-2 text-left text-sm text-soft-red transition hover:bg-soft-blush"
             >
               Block contact
             </button>
@@ -1318,7 +1384,6 @@ export default function App() {
       </div>
     )
   } else if (screen === 'chats') {
-    const visibleThreads = settings.showGlobalChat ? [globalThread, ...threads] : threads
     screenView = (
       <div className="h-[100dvh] w-full overflow-hidden bg-warm-cream md:flex">
         <aside className="hidden w-[280px] shrink-0 flex-col items-center gap-3 border-r border-border bg-white py-4 md:flex lg:w-[300px]">
