@@ -231,6 +231,9 @@ class CallManager {
   private reconnectTimer: number | undefined
   private iceRestartUsed = false
   private reconnecting = false
+  // Only the peer that sent the original offer may restart ICE. If both peers
+  // restart at once their offers collide and setRemoteDescription fails.
+  private restartInitiator = false
   private pendingIce: RTCIceCandidateInit[] = []
   private pendingAcceptCallId = ''
   private error = ''
@@ -404,6 +407,7 @@ class CallManager {
     this.clearReconnectTimer()
     this.iceRestartUsed = false
     this.reconnecting = false
+    this.restartInitiator = false
     this.pendingIce = []
     this.pendingAcceptCallId = ''
     if (this.local) {
@@ -622,7 +626,8 @@ class CallManager {
   private async tryIceRestart(reason: string) {
     if (this.state === 'ended' || this.state === 'idle') return
     if (!this.pc || !this.peerId || !this.callId) return
-    if (this.reconnecting) return
+    if (!this.restartInitiator) return
+    if (this.reconnecting || this.pc.signalingState !== 'stable') return
     if (this.iceRestartUsed) {
       this.fail('Call dropped, connection failed, try again, check your internet')
       return
@@ -660,6 +665,7 @@ class CallManager {
     this.peerId = peerId
     this.peerName = peerName
     this.kind = kind
+    this.restartInitiator = true
     this.lastPeerId = peerId
     this.lastPeerName = peerName
     this.lastKind = kind
@@ -701,6 +707,7 @@ class CallManager {
     this.peerName = event.peerName ?? ''
     this.callId = event.callId
     this.kind = event.kind
+    this.restartInitiator = false
     this.lastPeerId = event.from
     this.lastPeerName = event.peerName ?? ''
     this.lastKind = event.kind
@@ -743,6 +750,7 @@ class CallManager {
     if (this.pc && this.peerId && this.callId) {
       this.iceRestartUsed = false
       this.reconnecting = false
+      this.restartInitiator = true
       this.startConnectTimer()
       await this.tryIceRestart('retry')
       return
