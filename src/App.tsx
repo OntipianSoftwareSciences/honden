@@ -8,7 +8,7 @@ import Onboarding from './screens/Onboarding'
 import EmptyChat from './screens/EmptyChat'
 import AddUser from './screens/AddUser'
 import Settings from './screens/Settings'
-import { useSettings } from './hooks/useSettings'
+import { applyTheme, useSettings } from './hooks/useSettings'
 import { useLayoutInfo } from './hooks/useLayoutInfo'
 import { parseDeepLink } from './deepLink'
 import { useTouchBounce } from './hooks/useTouchBounce'
@@ -366,6 +366,9 @@ export default function App() {
     return localStorage.getItem('honden.username') && getSignalToken() ? 'chats' : 'onboarding'
   })
   const { settings, update } = useSettings()
+  useEffect(() => {
+    applyTheme(settings.theme)
+  }, [settings.theme])
   const layout = useLayoutInfo()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [threads, setThreads] = useState<Thread[]>(loadThreads)

@@ -69,9 +69,9 @@ export default function Settings({
   }
 
   return (
-    <main className="screen-fade min-h-screen bg-warm-cream p-4">
-      <div className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-3xl border border-border bg-white shadow-soft">
-        <header className="flex items-center gap-3 border-b border-border px-6 py-4">
+    <main className="screen-fade h-[100dvh] w-full bg-warm-cream p-4">
+      <div className="mx-auto grid h-full w-full max-w-2xl grid-rows-[auto_minmax(0,1fr)] rounded-3xl border border-border bg-white shadow-soft">
+        <header className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-2xl bg-soft-blush text-heart-pink">
             <HeartMark size={16} />
           </span>
@@ -85,7 +85,31 @@ export default function Settings({
           </button>
         </header>
 
-        <div className="flex-1 space-y-6 px-6 py-8">
+        <div data-testid="settings-content" className="touch-scroll min-h-0 space-y-6 overflow-y-auto px-6 py-8">
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-3 text-sm font-bold text-pink-ink">Theme</h2>
+            <div className="flex flex-wrap gap-2">
+              {(['light', 'dark', 'ultra-dark'] as const).map((theme) => (
+                <button
+                  key={theme}
+                  type="button"
+                  aria-pressed={settings.theme === theme}
+                  onClick={() => update('theme', theme)}
+                  className={`min-h-11 rounded-xl border px-4 py-2 text-sm font-bold transition ${
+                    settings.theme === theme
+                      ? 'border-heart-pink bg-heart-pink text-white'
+                      : 'border-border text-warm-charcoal hover:bg-soft-blush'
+                  }`}
+                >
+                  {theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'Ultra Dark'}
+                </button>
+              ))}
+            </div>
+            <p className={`mt-3 ${noteText}`}>
+              Choose the look that feels best. The change applies right away.
+            </p>
+          </section>
+
           <section className="rounded-2xl border border-border bg-warm-cream p-6">
             <h2 className="mb-2 text-sm font-bold text-pink-ink">Layout</h2>
             <p className="readable-text break-words text-warm-charcoal" data-testid="layout-info">
@@ -326,20 +350,20 @@ export default function Settings({
               Log out
             </button>
           </section>
-        </div>
 
-        <footer className="border-t border-border px-6 py-6 text-center">
-          <p className="font-bold">Made with care by HonDen</p>
-          <p className={`mt-1 ${noteText}`}>
-            Questions? We actually read our messages.{' '}
-            <button
-              type="button"
-              className="text-deep-rose underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
-            >
-              Contact us
-            </button>
-          </p>
-        </footer>
+          <footer className="border-t border-border px-6 py-6 text-center">
+            <p className="font-bold">Made with care by HonDen</p>
+            <p className={`mt-1 ${noteText}`}>
+              Questions? We actually read our messages.{' '}
+              <button
+                type="button"
+                className="text-deep-rose underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                Contact us
+              </button>
+            </p>
+          </footer>
+        </div>
       </div>
 
       {confirmDelete && (

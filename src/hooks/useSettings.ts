@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { setSoundSettings } from '../sounds'
 
+export type ThemeName = 'light' | 'dark' | 'ultra-dark'
+
 export type Settings = {
+  theme: ThemeName
   readReceipts: boolean
   gentleNotifications: boolean
   largeText: boolean
@@ -22,6 +25,7 @@ export type UpdateSetting = <K extends SettingKey>(
 const STORAGE_KEY = 'honden.settings'
 
 const defaults: Settings = {
+  theme: 'light',
   readReceipts: false,
   gentleNotifications: true,
   largeText: false,
@@ -32,11 +36,31 @@ const defaults: Settings = {
   soundVolume: 0.35,
 }
 
+function isTheme(value: unknown): value is ThemeName {
+  return value === 'light' || value === 'dark' || value === 'ultra-dark'
+}
+
+export function applyTheme(theme: ThemeName): void {
+  document.documentElement.setAttribute('data-theme', theme)
+}
+
+export function readStoredTheme(): ThemeName {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (!saved) return defaults.theme
+    const theme = (JSON.parse(saved) as Partial<Settings>).theme
+    return isTheme(theme) ? theme : defaults.theme
+  } catch {
+    return defaults.theme
+  }
+}
+
 function load(): Settings {
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (!saved) return defaults
-    return { ...defaults, ...JSON.parse(saved) }
+    const parsed = JSON.parse(saved) as Partial<Settings>
+    return { ...defaults, ...parsed, theme: isTheme(parsed.theme) ? parsed.theme : defaults.theme }
   } catch {
     return defaults
   }
@@ -54,6 +78,10 @@ export function useSettings() {
   }, [settings.sounds, settings.soundVolume])
 
   useEffect(() => {
+    applyTheme(settings.theme)
+  }, [settings.theme])
+
+  useEffect(() => {
     const root = document.documentElement
     if (settings.largeText) {
       root.setAttribute('data-large-text', 'true')
@@ -63,8 +91,11 @@ export function useSettings() {
   }, [settings.largeText])
 
   const update: UpdateSetting = (key, value) => {
+    if (key === 'theme') applyTheme(value as ThemeName)
     setSettings((current) => ({ ...current, [key]: value }))
   }
 
-  return { settings, update }
+  const setTheme = (theme: ThemeName) => update('theme', theme)
+
+  return { settings, update, setTheme }
 }

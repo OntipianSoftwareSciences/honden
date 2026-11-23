@@ -1,7 +1,10 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { applyTheme, readStoredTheme } from './hooks/useSettings'
 import './index.css'
+
+applyTheme(readStoredTheme())
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

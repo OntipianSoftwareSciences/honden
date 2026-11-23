@@ -28,7 +28,7 @@
     width: 100%;
     max-width: 100%;
     height: 100%;
-    overflow: hidden;
+    overflow-x: hidden;
   }
 
   body {
@@ -354,9 +354,14 @@
   color: var(--pink-ink) !important;
 }
 
-@media (prefers-color-scheme: dark) {
-  .bg-white {
-    background-color: #2A2030 !important;
-  }
+/* Explicit themes: every white surface follows the active palette. */
+html[data-theme='dark'] [class*='bg-white'],
+html[data-theme='ultra-dark'] [class*='bg-white'] {
+  background-color: var(--surface) !important;
+}
+
+html[data-theme='dark'] [class*='bg-warm-cream'],
+html[data-theme='ultra-dark'] [class*='bg-warm-cream'] {
+  background-color: var(--warm-cream) !important;
 }
 
