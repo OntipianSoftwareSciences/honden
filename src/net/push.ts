@@ -79,11 +79,6 @@ export async function setPushKind(
   current: PushFlags,
 ): Promise<PushResult> {
   if (!pushSupported()) return 'unsupported'
-  if (enabled && Notification.permission !== 'granted') {
-    const permission = await Notification.requestPermission()
-    if (permission === 'denied') return 'blocked'
-    if (permission !== 'granted') return 'error'
-  }
   const next: PushFlags =
     kind === 'call'
       ? { ...current, callNotifications: enabled }

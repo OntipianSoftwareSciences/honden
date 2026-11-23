@@ -36,22 +36,40 @@ export default function Settings({
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [notificationsBlocked, setNotificationsBlocked] = useState(false)
+  const [pushSetupError, setPushSetupError] = useState(false)
   const [relayDraft, setRelayDraft] = useState(settings.relayUrl)
   const [copied, setCopied] = useState(false)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const [installHandled, setInstallHandled] = useState(false)
 
   async function changePush(kind: PushKind, enabled: boolean) {
+    if (enabled && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+      const permission = await Notification.requestPermission()
+      if (permission === 'denied') {
+        setNotificationsBlocked(true)
+        setPushSetupError(false)
+        return
+      }
+      if (permission !== 'granted') {
+        setPushSetupError(true)
+        return
+      }
+    }
     const result = await setPushKind(kind, enabled, {
       callNotifications: settings.callNotifications,
       messageNotifications: settings.gentleNotifications,
     })
     if (result === 'blocked') {
       setNotificationsBlocked(true)
+      setPushSetupError(false)
       return
     }
-    if (result !== 'ok') return
+    if (result !== 'ok') {
+      setPushSetupError(true)
+      return
+    }
     setNotificationsBlocked(false)
+    setPushSetupError(false)
     update(kind === 'call' ? 'callNotifications' : 'gentleNotifications', enabled)
   }
 
@@ -317,6 +335,12 @@ export default function Settings({
                     <p className={noteText}>
                       Notifications are blocked in Firefox. Allow them in Firefox Settings &gt;
                       Privacy &gt; Notifications for honden.onrender.com, then try again.
+                    </p>
+                  )}
+                  {pushSetupError && (
+                    <p className={noteText}>
+                      Push notifications are unavailable right now. The site needs its VAPID keys
+                      configured on the server, then try again.
                     </p>
                   )}
                 </div>
