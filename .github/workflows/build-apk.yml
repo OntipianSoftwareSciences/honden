@@ -25,13 +25,18 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          # v3 installed the removed "tools" package, which makes sdkmanager
+          # exit 1. v4 installs only platform-tools and accepts licenses.
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: 'yes'
 
       - name: Install Android SDK packages and NDK
         run: |
