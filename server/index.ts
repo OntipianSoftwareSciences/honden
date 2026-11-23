@@ -58,8 +58,15 @@ const globalError = 'Please keep #honey-den kind and link-free.'
 const globalRateLimit = new Map<string, number>()
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY
-if (vapidPublicKey && vapidPrivateKey) {
+let vapidConfigured = false
+try {
+  if (!vapidPublicKey || !vapidPrivateKey) throw new Error('VAPID keys missing')
   webPush.setVapidDetails('mailto:taulikespie@gmail.com', vapidPublicKey, vapidPrivateKey)
+  vapidConfigured = true
+} catch {
+  console.warn(
+    'Web Push disabled: VAPID keys missing or invalid, push will not work until they are set correctly in Render',
+  )
 }
 
 function normalizeCallUsername(value: string): string {
@@ -692,7 +699,7 @@ app.post('/api/key-backup', async (req, res) => {
 })
 
 app.get('/api/vapid-public-key', (_req, res) => {
-  if (!vapidPublicKey) {
+  if (!vapidConfigured) {
     res.status(503).json({ error: 'Push notifications are not configured.' })
     return
   }
@@ -1047,7 +1054,7 @@ async function sendPushToRecipient(
   payload: PushPayload,
   kind: 'call' | 'message',
 ): Promise<void> {
-  if (!pool || !vapidPublicKey || !vapidPrivateKey) return
+  if (!pool || !vapidConfigured || !vapidPublicKey) return
   const to = normalizeCallUsername(recipient)
   const sender = normalizeCallUsername(payload.sender)
   if (!to || !sender || to === sender) return
