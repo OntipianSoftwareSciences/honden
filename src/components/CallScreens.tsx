@@ -190,7 +190,10 @@ export default function CallScreens({
             <span className="text-[13px] font-semibold leading-tight">End call</span>
           </button>
         </div>
-        {snapshot.cameraCount <= 1 && (
+        {snapshot.cameraCount === 0 && (
+          <p className="mt-2 text-center text-[13px] text-soft-grey">No camera found</p>
+        )}
+        {snapshot.cameraCount === 1 && (
           <p className="mt-2 text-center text-[13px] text-soft-grey">Only one camera found</p>
         )}
         <p className="mt-2 text-center text-[13px] text-soft-grey">
@@ -198,6 +201,11 @@ export default function CallScreens({
         </p>
         {snapshot.error && (
           <p className="mt-1 text-center text-[13px] text-warm-charcoal">{snapshot.error}</p>
+        )}
+        {snapshot.notice && (
+          <p className="mt-1 text-center text-[13px] font-semibold text-soft-grey">
+            {snapshot.notice}
+          </p>
         )}
       </div>
     </div>

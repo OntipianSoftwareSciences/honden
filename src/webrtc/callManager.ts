@@ -21,6 +21,7 @@ export type CallSnapshot = {
   localStream: MediaStream | null
   remoteStream: MediaStream | null
   error: string
+  notice: string
 }
 
 type SignalingSender = (event: SignalEvent) => void
@@ -122,6 +123,7 @@ function idleSnapshot(): CallSnapshot {
     localStream: null,
     remoteStream: null,
     error: '',
+    notice: '',
   }
 }
 
@@ -142,6 +144,7 @@ class CallManager {
   private connectTimer: number | undefined
   private pendingIce: RTCIceCandidateInit[] = []
   private error = ''
+  private notice = ''
   private send: SignalingSender = () => undefined
   private listeners = new Set<(snapshot: CallSnapshot) => void>()
 
@@ -170,6 +173,7 @@ class CallManager {
       localStream: this.local,
       remoteStream: this.remote,
       error: this.error,
+      notice: this.notice,
     }
   }
 
@@ -266,6 +270,7 @@ class CallManager {
     this.peerName = ''
     this.kind = 'voice'
     this.error = ''
+    this.notice = ''
     this.emit()
   }
 
@@ -324,17 +329,56 @@ class CallManager {
     return pc
   }
 
+  private async tryGetMedia(
+    constraints: MediaStreamConstraints,
+  ): Promise<MediaStream | null> {
+    try {
+      // Let the browser's exact DOMException reach the caller.
+      return await navigator.mediaDevices.getUserMedia(constraints)
+    } catch (error) {
+      if (errorDetails(error).name === 'NotFoundError') {
+        logErrorName('device unavailable', error)
+        return null
+      }
+      throw error
+    }
+  }
+
   private async ensureLocalStream() {
     if (this.local) return this.local
-    const constraints: MediaStreamConstraints =
-      this.kind === 'video'
-        ? {
-            audio: true,
-            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          }
-        : { audio: true, video: false }
-    // Let the browser's exact DOMException (name and message) reach the caller.
-    this.local = await navigator.mediaDevices.getUserMedia(constraints)
+
+    const video: MediaTrackConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    }
+
+    if (this.kind === 'voice') {
+      // A voice call never needs a camera, so a missing camera cannot fail it.
+      this.local = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      this.notice = ''
+      await this.refreshCameras()
+      return this.local
+    }
+
+    let stream = await this.tryGetMedia({ audio: true, video })
+    if (stream) {
+      this.notice = ''
+    } else {
+      // One device is missing. Keep the call alive with whichever device works.
+      stream = await this.tryGetMedia({ audio: true, video: false })
+      if (stream) {
+        this.kind = 'voice'
+        this.notice = 'No camera found, voice call only'
+      } else {
+        stream = await this.tryGetMedia({ audio: false, video })
+        if (stream) {
+          this.notice = 'No microphone found'
+        } else {
+          throw new DOMException('No microphone found', 'NotFoundError')
+        }
+      }
+    }
+    this.local = stream
     await this.refreshCameras()
     return this.local
   }
@@ -368,12 +412,13 @@ class CallManager {
       return
     }
 
-    console.info('[call] invite sent', { callId: this.callId, to: peerId, kind })
+    const activeKind = this.kind
+    console.info('[call] invite sent', { callId: this.callId, to: peerId, kind: activeKind })
     this.send({
       type: 'call:invite',
       to: peerId,
       callId: this.callId,
-      kind,
+      kind: activeKind,
     })
     this.startConnectTimer()
   }
@@ -395,6 +440,7 @@ class CallManager {
     this.kind = event.kind
     this.state = 'incoming'
     this.error = ''
+    this.notice = ''
     this.emit()
   }
 
