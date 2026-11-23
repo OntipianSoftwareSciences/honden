@@ -1,4 +1,4 @@
-import type { CallKind, SignalEvent } from '../api/client'
+import { apiUrl, authHeaders, type CallKind, type SignalEvent } from '../api/client'
 
 export type CallState =
   | 'idle'
@@ -148,8 +148,33 @@ const defaultTurnSecret = 'openrelayprojectsecret'
 const envTurnUrls = parseIceUrls(
   import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL,
 )
-const turnUrls = envTurnUrls
 let cachedIceServers: RTCIceServer[] | null = null
+
+// Render service env vars are available to the server at runtime, but Vite only
+// bakes VITE_* vars into the bundle at build time. Prefer the runtime config so
+// dashboard changes take effect without a rebuild.
+function cleanEnvValue(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value
+    .trim()
+    .replace(/^"(.*)"$/, '$1')
+    .replace(/^'(.*)'$/, '$1')
+    .trim()
+}
+
+type RuntimeTurnConfig = { urls?: unknown; username?: unknown; credential?: unknown }
+
+async function fetchRuntimeTurn(): Promise<RuntimeTurnConfig | null> {
+  if (typeof fetch === 'undefined' || typeof localStorage === 'undefined') return null
+  try {
+    const response = await fetch(apiUrl('/api/turn-config'), { headers: authHeaders() })
+    if (!response.ok) return null
+    const data = (await response.json()) as RuntimeTurnConfig
+    return data && typeof data === 'object' ? data : null
+  } catch {
+    return null
+  }
+}
 
 function toBase64(bytes: Uint8Array): string {
   let binary = ''
@@ -177,9 +202,15 @@ async function hmacSha1Base64(secret: string, value: string): Promise<string> {
 async function getIceServers(): Promise<RTCIceServer[]> {
   if (cachedIceServers) return cachedIceServers
 
+  const runtime = await fetchRuntimeTurn()
+  const runtimeUrls = parseIceUrls(cleanEnvValue(runtime?.urls))
+  const turnUrls = runtimeUrls.length > 0 ? runtimeUrls : envTurnUrls
+  const usernameSource = runtime?.username ?? import.meta.env?.VITE_TURN_USERNAME
+  const credentialSource = runtime?.credential ?? import.meta.env?.VITE_TURN_CREDENTIAL
+  const envUsername = cleanEnvValue(usernameSource)
+  const envCredential = cleanEnvValue(credentialSource)
+
   const servers: RTCIceServer[] = [{ urls: defaultStunUrls }]
-  const envUsername = import.meta.env?.VITE_TURN_USERNAME
-  const envCredential = import.meta.env?.VITE_TURN_CREDENTIAL
   if (turnUrls.length > 0 && envUsername && envCredential) {
     servers.push({
       urls: turnUrls,
@@ -201,10 +232,15 @@ async function getIceServers(): Promise<RTCIceServer[]> {
 
   // Log names + URLs + auth presence only. Never log a credential or token.
   console.info('[call] TURN env config', {
-    VITE_TURN_URLS: envTurnUrls.length > 0,
-    VITE_TURN_USERNAME: Boolean(import.meta.env?.VITE_TURN_USERNAME),
-    VITE_TURN_CREDENTIAL: Boolean(import.meta.env?.VITE_TURN_CREDENTIAL),
-    source: envTurnUrls.length > 0 ? 'VITE_TURN_URLS' : 'default-openrelay',
+    VITE_TURN_URLS: turnUrls.length > 0,
+    VITE_TURN_USERNAME: Boolean(envUsername),
+    VITE_TURN_CREDENTIAL: Boolean(envCredential),
+    source:
+      runtimeUrls.length > 0
+        ? 'runtime-config'
+        : envTurnUrls.length > 0
+          ? 'VITE_TURN_URLS'
+          : 'default-openrelay',
   })
   console.info(
     '[call] ICE servers',

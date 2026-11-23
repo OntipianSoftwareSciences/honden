@@ -1228,6 +1228,21 @@ app.post('/api/call-decline', (req, res) => {
   res.json({ ok: true })
 })
 
+// Vite env vars are baked in at build time. Serve the TURN settings at runtime
+// from the service environment so dashboard changes do not require a rebuild.
+app.get('/api/turn-config', (req, res) => {
+  if (!tokenUser(req)) {
+    res.status(401).json({ ok: false })
+    return
+  }
+  res.set('Cache-Control', 'no-store')
+  res.json({
+    urls: process.env.VITE_TURN_URLS ?? process.env.VITE_TURN_URL ?? '',
+    username: process.env.VITE_TURN_USERNAME ?? '',
+    credential: process.env.VITE_TURN_CREDENTIAL ?? '',
+  })
+})
+
 const distDir = join(here, '..', 'dist')
 app.use(express.static(distDir))
 app.use((req, res, next) => {
