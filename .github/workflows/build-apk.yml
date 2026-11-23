@@ -43,7 +43,7 @@ jobs:
       - name: Install Android SDK packages and NDK
         run: |
           # Tauri 2.12 generated projects use compileSdk/targetSdk 37.
-          sdkmanager --install "platform-tools" "platforms;android-37" "build-tools;37.0.0" "ndk;28.2.13676358"
+          sdkmanager --install "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.2.13676358"
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
