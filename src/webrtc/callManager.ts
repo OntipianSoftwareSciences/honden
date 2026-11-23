@@ -151,6 +151,11 @@ const envTurnUrls = parseIceUrls(
   import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL,
 )
 let cachedIceServers: RTCIceServer[] | null = null
+let cachedIceConfigKey = ''
+let cachedIceConfigAt = 0
+// TURN credentials can be rotated in Render without a redeploy. A long-lived tab
+// must not keep using the credentials it loaded when the page first opened.
+const ICE_CONFIG_TTL_MS = 60_000
 let useRelayOnly = false
 
 // Render service env vars are available to the server at runtime, but Vite only
@@ -170,7 +175,10 @@ type RuntimeTurnConfig = { urls?: unknown; username?: unknown; credential?: unkn
 async function fetchRuntimeTurn(): Promise<RuntimeTurnConfig | null> {
   if (typeof fetch === 'undefined' || typeof localStorage === 'undefined') return null
   try {
-    const response = await fetch(apiUrl('/api/turn-config'), { headers: authHeaders() })
+    const response = await fetch(apiUrl(`/api/turn-config?t=${Date.now()}`), {
+      headers: authHeaders(),
+      cache: 'no-store',
+    })
     if (!response.ok) return null
     const data = (await response.json()) as RuntimeTurnConfig
     return data && typeof data === 'object' ? data : null
@@ -202,8 +210,15 @@ async function hmacSha1Base64(secret: string, value: string): Promise<string> {
   return toBase64(new Uint8Array(signature))
 }
 
-async function getIceServers(): Promise<RTCIceServer[]> {
-  if (cachedIceServers) return cachedIceServers
+async function getIceServers(forceRefresh = false): Promise<RTCIceServer[]> {
+  const now = Date.now()
+  if (
+    !forceRefresh &&
+    cachedIceServers &&
+    now - cachedIceConfigAt < ICE_CONFIG_TTL_MS
+  ) {
+    return cachedIceServers
+  }
 
   const runtime = await fetchRuntimeTurn()
   const runtimeUrls = parseIceUrls(cleanEnvValue(runtime?.urls))
@@ -212,6 +227,18 @@ async function getIceServers(): Promise<RTCIceServer[]> {
   const credentialSource = runtime?.credential ?? import.meta.env?.VITE_TURN_CREDENTIAL
   const envUsername = cleanEnvValue(usernameSource)
   const envCredential = cleanEnvValue(credentialSource)
+  const source = runtimeUrls.length > 0
+    ? 'runtime-config'
+    : envTurnUrls.length > 0
+      ? 'VITE_TURN_URLS'
+      : 'default-openrelay'
+  // Identical config means the refresh found nothing new; keep the existing
+  // connection settings instead of needlessly replacing a working peer.
+  const configKey = JSON.stringify({ turnUrls, envUsername, envCredential, source })
+  if (!forceRefresh && cachedIceServers && configKey === cachedIceConfigKey) {
+    cachedIceConfigAt = now
+    return cachedIceServers
+  }
 
   const servers: RTCIceServer[] = [{ urls: defaultStunUrls }]
   if (turnUrls.length > 0 && envUsername && envCredential) {
@@ -243,12 +270,7 @@ async function getIceServers(): Promise<RTCIceServer[]> {
     VITE_TURN_URLS: turnUrls.length > 0,
     VITE_TURN_USERNAME: Boolean(envUsername),
     VITE_TURN_CREDENTIAL: Boolean(envCredential),
-    source:
-      runtimeUrls.length > 0
-        ? 'runtime-config'
-        : envTurnUrls.length > 0
-          ? 'VITE_TURN_URLS'
-          : 'default-openrelay',
+    source,
   })
   console.info(
     '[call] ICE servers',
@@ -261,7 +283,16 @@ async function getIceServers(): Promise<RTCIceServer[]> {
     })),
   )
   cachedIceServers = servers
+  cachedIceConfigKey = configKey
+  cachedIceConfigAt = now
   return servers
+}
+
+async function refreshIceConfig(): Promise<RTCIceServer[]> {
+  cachedIceServers = null
+  cachedIceConfigKey = ''
+  cachedIceConfigAt = 0
+  return getIceServers(true)
 }
 
 function signalLog(message: string, callId: string) {
@@ -309,6 +340,7 @@ class CallManager {
   private endedLogged = false
   private signalingClosed = false
   private reconnecting = false
+  private rebuildingPeer = false
   // Only the peer that sent the original offer may restart ICE. If both peers
   // restart at once their offers collide and setRemoteDescription fails.
   private restartInitiator = false
@@ -388,6 +420,7 @@ class CallManager {
   private logState(label: string) {
     console.info('[call] state', {
       callId: this.callId,
+      date: new Date().toISOString(),
       label,
       state: this.state,
       connection: this.pc?.connectionState ?? 'none',
@@ -437,7 +470,7 @@ class CallManager {
     const turn = this.relayCandidateSeen ? 'working' : 'not working'
     const mic = this.micFound ? 'found' : 'not found'
     const camera = this.cameraFound ? 'found' : 'not found'
-    this.connectDiagnostic = `Still connecting, ICE state: ${ice}, TURN: ${turn}, Mic: ${mic}, Camera: ${camera}`
+    this.connectDiagnostic = `Still connecting, ICE: ${ice}, TURN: ${turn}, Mic: ${mic}, Camera: ${camera}`
     this.retryAvailable = true
   }
 
@@ -473,6 +506,15 @@ class CallManager {
     this.state = 'connected'
     this.logCallConnected()
     this.logState('connected')
+    console.info('[call] ICE connected diagnostic', {
+      callId: this.callId,
+      date: new Date().toISOString(),
+      ice: this.pc?.iceConnectionState ?? 'none',
+      candidateTypes: this.candidateTypes.join(',') || 'none',
+      turn: this.relayCandidateSeen ? 'working' : 'not working',
+      mic: this.micFound ? 'found' : 'not found',
+      camera: this.cameraFound ? 'found' : 'not found',
+    })
     this.emit()
   }
 
@@ -526,6 +568,16 @@ class CallManager {
         this.signalingClosed ? 'WebSocket closed' : 'ICE disconnected',
       )
     }, 10_000)
+    if (this.state === 'connecting') {
+      // Before the first connection, a failed ICE agent usually means stale or
+      // rejected TURN credentials. Rebuild with freshly fetched config instead
+      // of restarting the same broken agent.
+      if (this.peerId && this.callId) {
+        this.emitSignal({ type: 'call:retry', to: this.peerId, callId: this.callId })
+      }
+      void this.rebuildPeerConnection(label)
+      return
+    }
     void this.tryIceRestart(label)
   }
 
@@ -541,6 +593,7 @@ class CallManager {
     this.clearReconnectTimer()
     this.clearIceTroubleTimer()
     this.reconnecting = false
+    this.rebuildingPeer = false
     this.restartInitiator = false
     this.pendingIce = []
     this.pendingAcceptCallId = ''
@@ -584,10 +637,10 @@ class CallManager {
     this.emit()
   }
 
-  private async ensurePeerConnection() {
-    if (this.pc) return this.pc
+  private async ensurePeerConnection(freshConfig = false) {
+    if (this.pc && !freshConfig) return this.pc
 
-    const iceServers = await getIceServers()
+    const iceServers = freshConfig ? await refreshIceConfig() : await getIceServers()
     const config: RTCConfiguration = { iceServers }
     if (useRelayOnly) config.iceTransportPolicy = 'relay'
     const pc = new RTCPeerConnection(config)
@@ -598,6 +651,7 @@ class CallManager {
       if (!event.candidate) {
         console.info('[call] ICE gathering complete', {
           callId: this.callId,
+          date: new Date().toISOString(),
           candidateTypes: this.candidateTypes.join(',') || 'none',
           turn: this.relayCandidateSeen ? 'working' : 'not working',
         })
@@ -770,6 +824,51 @@ class CallManager {
     this.hangup()
   }
 
+  // Rebuild the ICE agent with fresh server settings. Reusing a peer connection
+  // keeps its original TURN configuration, so a stale credential can never be
+  // replaced by a normal ICE restart.
+  private async rebuildPeerConnection(reason: string) {
+    if (this.state === 'ended' || this.state === 'idle') return
+    if (this.rebuildingPeer || !this.peerId || !this.callId || !this.local) return
+    this.rebuildingPeer = true
+    signalLog(`Rebuilding peer connection: ${reason}`, this.callId)
+
+    const previous = this.pc
+    if (previous) {
+      previous.onicecandidate = null
+      previous.ontrack = null
+      previous.onconnectionstatechange = null
+      previous.oniceconnectionstatechange = null
+      previous.close()
+    }
+    this.pc = null
+    this.pendingIce = []
+    this.relayCandidateSeen = false
+    this.candidateTypes = []
+    this.remote = new MediaStream()
+    this.emit()
+
+    try {
+      const pc = await this.ensurePeerConnection(true)
+      this.attachLocalTracks(pc, this.local)
+      if (this.restartInitiator) {
+        const offer = await pc.createOffer({ iceRestart: true })
+        await pc.setLocalDescription(offer)
+        this.emitSignal({
+          type: 'call:offer',
+          to: this.peerId,
+          callId: this.callId,
+          sdp: pc.localDescription ?? offer,
+        })
+      }
+      this.logState(`peer-rebuilt-${reason}`)
+    } catch (error) {
+      logErrorName('peer rebuild failed', error)
+    } finally {
+      this.rebuildingPeer = false
+    }
+  }
+
   private async tryIceRestart(reason: string) {
     if (this.state === 'ended' || this.state === 'idle') return
     if (!this.pc || !this.peerId || !this.callId) return
@@ -898,9 +997,9 @@ class CallManager {
     this.notice = ''
     if (this.pc && this.peerId && this.callId) {
       this.reconnecting = false
-      this.restartInitiator = true
       this.startConnectTimer()
-      await this.tryIceRestart('retry')
+      this.emitSignal({ type: 'call:retry', to: this.peerId, callId: this.callId })
+      await this.rebuildPeerConnection('retry')
       return
     }
     if (this.lastPeerId) {
@@ -1014,6 +1113,16 @@ class CallManager {
       logErrorName('ice candidate failed', error)
       this.pendingIce.push(event.candidate)
     }
+  }
+
+  async handleRetry(event: SignalEvent) {
+    if (event.callId !== this.callId) return
+    if (this.state !== 'calling' && this.state !== 'connecting') return
+    signalLog('Retry received', this.callId)
+    this.clearDiagnostic()
+    this.notice = ''
+    this.startConnectTimer()
+    await this.rebuildPeerConnection('peer-retry')
   }
 
   handleReject(event: SignalEvent) {

@@ -663,6 +663,9 @@ export default function App() {
             case 'call:ice':
               void callManager.handleIce(event)
               break
+            case 'call:retry':
+              void callManager.handleRetry(event)
+              break
             case 'call:hangup':
               callManager.handleHangup(event)
               break

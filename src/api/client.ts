@@ -20,6 +20,7 @@ export type SignalEvent = {
     | 'call:offer'
     | 'call:answer'
     | 'call:ice'
+    | 'call:retry'
     | 'call:hangup'
   callId?: string
   to?: string
