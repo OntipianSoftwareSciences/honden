@@ -622,6 +622,7 @@ export default function App() {
       onStatus: (next) => {
         setConnection(next)
         if (next === 'live') void flushOutbox()
+        if (next === 'disconnected') callManager.notifySignalingClosed()
       },
       onSync: () => syncAllRef.current(),
       onFrame: (frame) => {

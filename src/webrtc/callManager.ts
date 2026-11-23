@@ -26,6 +26,8 @@ export type CallSnapshot = {
   retryAvailable: boolean
 }
 
+type CallEndReason = 'hung up' | 'ICE disconnected' | 'WebSocket closed' | 'timeout'
+
 type SignalingSender = (event: SignalEvent) => void
 
 const micMissingMessage =
@@ -302,7 +304,10 @@ class CallManager {
   private cameraLabelTimer: number | undefined
   private connectTimer: number | undefined
   private reconnectTimer: number | undefined
-  private iceRestartUsed = false
+  private iceTroubleTimer: number | undefined
+  private connectedLogged = false
+  private endedLogged = false
+  private signalingClosed = false
   private reconnecting = false
   // Only the peer that sent the original offer may restart ICE. If both peers
   // restart at once their offers collide and setRemoteDescription fails.
@@ -391,6 +396,33 @@ class CallManager {
     })
   }
 
+  // Only these two call lifecycle messages are logged. No message content,
+  // SDP, credentials, or device details are ever logged.
+  private logCallConnected() {
+    if (this.connectedLogged) return
+    this.connectedLogged = true
+    console.info('[call] Call connected', {
+      callId: this.callId,
+      date: new Date().toISOString(),
+    })
+  }
+
+  private logCallEnded(reason: CallEndReason) {
+    if (this.endedLogged) return
+    this.endedLogged = true
+    console.info(`[call] Call ended, reason: ${reason}`, {
+      callId: this.callId,
+      date: new Date().toISOString(),
+    })
+  }
+
+  // A signaling socket drop does not by itself end a connected call. It is
+  // remembered only so an ICE failure that follows it is labelled correctly.
+  notifySignalingClosed() {
+    if (this.state === 'idle' || this.state === 'ended') return
+    this.signalingClosed = true
+  }
+
   private clearDiagnostic() {
     this.connectDiagnostic = ''
     this.retryAvailable = false
@@ -413,7 +445,6 @@ class CallManager {
     if (this.connectTimer !== undefined) window.clearTimeout(this.connectTimer)
     this.connectTimer = window.setTimeout(() => {
       if (this.state === 'calling' || this.state === 'connecting') {
-        console.info('[call] connect timeout', { callId: this.callId })
         this.logState('connect-timeout')
         this.refreshDiagnostic()
         this.emit()
@@ -435,12 +466,12 @@ class CallManager {
       this.connectTimer = undefined
     }
     this.clearReconnectTimer()
+    this.clearIceTroubleTimer()
     this.reconnecting = false
-    this.iceRestartUsed = false
     this.notice = this.notice === 'Reconnecting...' ? '' : this.notice
     this.clearDiagnostic()
     this.state = 'connected'
-    console.info('[call] connected', { callId: this.callId })
+    this.logCallConnected()
     this.logState('connected')
     this.emit()
   }
@@ -468,6 +499,36 @@ class CallManager {
     }
   }
 
+  private clearIceTroubleTimer() {
+    if (this.iceTroubleTimer !== undefined) {
+      window.clearTimeout(this.iceTroubleTimer)
+      this.iceTroubleTimer = undefined
+    }
+  }
+
+  // A short ICE disconnect is normal on mobile and relay networks. Give the
+  // connection ten seconds to recover before ending the call. Meanwhile try
+  // one ICE restart so it can recover without any user action.
+  private handleIceTrouble(label: string) {
+    if (this.state !== 'connected' && this.state !== 'connecting') return
+    if (this.iceTroubleTimer !== undefined) return
+    this.iceTroubleTimer = window.setTimeout(() => {
+      this.iceTroubleTimer = undefined
+      const ice = this.pc?.iceConnectionState ?? 'failed'
+      const connection = this.pc?.connectionState ?? 'failed'
+      if (ice === 'connected' || ice === 'completed' || connection === 'connected') {
+        this.clearReconnectTimer()
+        this.reconnecting = false
+        return
+      }
+      this.fail(
+        'Call ended, connection lost',
+        this.signalingClosed ? 'WebSocket closed' : 'ICE disconnected',
+      )
+    }, 10_000)
+    void this.tryIceRestart(label)
+  }
+
   private teardown() {
     if (this.cameraLabelTimer !== undefined) {
       window.clearTimeout(this.cameraLabelTimer)
@@ -478,7 +539,7 @@ class CallManager {
       this.connectTimer = undefined
     }
     this.clearReconnectTimer()
-    this.iceRestartUsed = false
+    this.clearIceTroubleTimer()
     this.reconnecting = false
     this.restartInitiator = false
     this.pendingIce = []
@@ -516,6 +577,9 @@ class CallManager {
     this.kind = 'voice'
     this.error = ''
     this.notice = ''
+    this.connectedLogged = false
+    this.endedLogged = false
+    this.signalingClosed = false
     this.clearDiagnostic()
     this.emit()
   }
@@ -582,12 +646,12 @@ class CallManager {
         return
       }
       if (pc.connectionState === 'disconnected') {
-        void this.tryIceRestart('disconnected')
+        this.handleIceTrouble('disconnected')
         return
       }
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         if (this.state !== 'ended') {
-          void this.tryIceRestart('failed')
+          this.handleIceTrouble('failed')
         }
       }
     }
@@ -606,7 +670,7 @@ class CallManager {
         return
       }
       if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        void this.tryIceRestart(pc.iceConnectionState)
+        this.handleIceTrouble(pc.iceConnectionState)
       }
     }
 
@@ -699,8 +763,9 @@ class CallManager {
     }
   }
 
-  private fail(message: string) {
+  private fail(message: string, reason: CallEndReason = 'ICE disconnected') {
     this.error = message
+    this.logCallEnded(reason)
     this.logState('fail')
     this.hangup()
   }
@@ -710,20 +775,19 @@ class CallManager {
     if (!this.pc || !this.peerId || !this.callId) return
     if (!this.restartInitiator) return
     if (this.reconnecting || this.pc.signalingState !== 'stable') return
-    if (this.iceRestartUsed) {
-      this.fail('Call dropped, connection failed, try again, check your internet')
-      return
-    }
-    this.iceRestartUsed = true
     this.reconnecting = true
     this.notice = 'Reconnecting...'
     if (this.state === 'connected') this.state = 'connecting'
     this.logState(`ice-restart-${reason}`)
     this.emit()
     this.clearReconnectTimer()
+    // The ICE trouble timer is the single source of truth for ending a call.
+    // This only releases the reconnect flag; it must not hang up by itself.
     this.reconnectTimer = window.setTimeout(() => {
       if (this.reconnecting && this.state !== 'connected' && this.state !== 'ended') {
-        this.fail('Call dropped, connection failed, try again, check your internet')
+        this.reconnecting = false
+        this.notice = ''
+        this.emit()
       }
     }, 10_000)
 
@@ -738,7 +802,9 @@ class CallManager {
       })
     } catch (error) {
       logErrorName('ice restart failed', error)
-      this.fail('Call dropped, connection failed, try again, check your internet')
+      this.reconnecting = false
+      this.notice = ''
+      this.emit()
     }
   }
 
@@ -831,7 +897,6 @@ class CallManager {
     this.clearDiagnostic()
     this.notice = ''
     if (this.pc && this.peerId && this.callId) {
-      this.iceRestartUsed = false
       this.reconnecting = false
       this.restartInitiator = true
       this.startConnectTimer()
@@ -844,6 +909,7 @@ class CallManager {
   }
 
   reject() {
+    this.logCallEnded('hung up')
     if (this.peerId && this.callId) {
       this.emitSignal({
         type: 'call:reject',
@@ -921,6 +987,10 @@ class CallManager {
       console.info('[call] answer received', { callId: this.callId, from: event.from })
       await this.pc?.setRemoteDescription(event.sdp)
       await this.flushIce()
+      if (this.reconnecting) {
+        this.reconnecting = false
+        this.notice = ''
+      }
       this.logState('answer-applied')
     } catch (error) {
       this.fail(callErrorText(stage, error))
@@ -952,6 +1022,7 @@ class CallManager {
 
   handleHangup(event: SignalEvent) {
     if (event.callId && event.callId !== this.callId) return
+    this.logCallEnded('hung up')
     this.teardown()
     this.state = 'ended'
     this.emit()
@@ -961,6 +1032,7 @@ class CallManager {
   }
 
   hangup() {
+    this.logCallEnded('hung up')
     const callId = this.callId
     if (this.peerId && callId) {
       this.emitSignal({ type: 'call:hangup', to: this.peerId, callId })
