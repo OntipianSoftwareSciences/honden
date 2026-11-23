@@ -34,9 +34,11 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           # v3 installed the removed "tools" package, which makes sdkmanager
-          # exit 1. v4 installs only platform-tools and accepts licenses.
+          # exit 1. v4 skips that package. The license input must be a YAML
+          # boolean ('yes' makes getBooleanInput throw before licenses are
+          # accepted, so later sdkmanager installs fail).
           packages: 'platform-tools'
-          accept-android-sdk-licenses: 'yes'
+          accept-android-sdk-licenses: 'true'
 
       - name: Install Android SDK packages and NDK
         run: |
