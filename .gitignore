@@ -5,3 +5,4 @@ server/data/*.json
 server-dist
 .DS_Store
 *.local
+.env
