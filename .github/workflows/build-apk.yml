@@ -44,9 +44,19 @@ jobs:
 
       - name: Install Android SDK packages and NDK
         run: |
-          # Install SDK 34 for the pinned compileSdk/targetSdk in the patch step below.
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;28.2.13676358"
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          # API 34 is the targetSdk; API 37 is the compileSdk for the generated app.
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "build-tools;37.0.0" "ndk;28.2.13676358"
+          # API 37 is published as android-37.0. Try the flat id too, then alias the
+          # installed platform so AGP finds the 'android-37' folder it expects.
+          if ! sdkmanager --install "platforms;android-37"; then
+            echo 'platforms;android-37 is not published; falling back to platforms;android-37.0'
+          fi
+          if [ ! -f "$SDK_ROOT/platforms/android-37/source.properties" ]; then
+            sdkmanager --install "platforms;android-37.0"
+            rm -rf "$SDK_ROOT/platforms/android-37"
+            ln -s android-37.0 "$SDK_ROOT/platforms/android-37"
+          fi
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "NDK_HOME=$SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
@@ -58,11 +68,23 @@ jobs:
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
 
-      - name: Pin generated Android SDK to 34 / min 29
+      - name: Patch generated Android SDK to compile 37 / target 34 / min 29
         run: |
+          # tauri android init generates src-tauri/gen/android/app/build.gradle.kts.
+          # Keep compileSdk at 37 (tauri-android needs >= 36) and hold targetSdk at 34.
           find src-tauri/gen/android -name '*.gradle.kts' -exec \
-            sed -i -E 's/(compileSdk[[:space:]]*=[[:space:]]*)37/\134/; s/(targetSdk[[:space:]]*=[[:space:]]*)37/\134/' {} +
+            sed -i -E \
+              -e 's/(compileSdk[[:space:]]*=[[:space:]]*)[0-9]+/\137/' \
+              -e 's/(targetSdk[[:space:]]*=[[:space:]]*)[0-9]+/\134/' {} +
           grep -R -nE 'compileSdk|targetSdk|minSdk' src-tauri/gen/android --include='*.gradle.kts'
+          if ! grep -R -qE 'compileSdk[[:space:]]*=[[:space:]]*37' src-tauri/gen/android --include='*.gradle.kts'; then
+            echo 'compileSdk is not 37' >&2
+            exit 1
+          fi
+          if ! grep -R -qE 'targetSdk[[:space:]]*=[[:space:]]*34' src-tauri/gen/android --include='*.gradle.kts'; then
+            echo 'targetSdk is not 34' >&2
+            exit 1
+          fi
           if grep -R -qE 'minSdk[[:space:]]*=[[:space:]]*([3-9][0-9]|[1-9][0-9]{2,})' src-tauri/gen/android --include='*.gradle.kts'; then
             echo 'minSdk is above 29; Quest 2 needs API 29 or lower' >&2
             exit 1
