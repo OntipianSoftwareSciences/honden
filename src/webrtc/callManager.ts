@@ -103,11 +103,34 @@ function logErrorName(label: string, error: unknown) {
   console.warn(`[call] ${label}: ${name}`)
 }
 
-function parseIceUrls(value: string | undefined): string[] {
-  return (value ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
+// Render has been seen with a single URL, a comma-separated list, and a JSON
+// array string. Accept all three so the client matches whatever is configured.
+function parseIceUrls(value: unknown): string[] {
+  if (Array.isArray(value)) return normalizeIceUrls(value.map(String))
+  if (typeof value !== 'string') return []
+
+  const trimmed = value.trim()
+  if (!trimmed) return []
+
+  let items: unknown = trimmed
+  if (trimmed.startsWith('[')) {
+    try {
+      items = JSON.parse(trimmed)
+    } catch {
+      // A malformed array still gets split below, so one bad entry cannot
+      // silently disable TURN for the whole call.
+    }
+  }
+  const values = Array.isArray(items) ? items.map(String) : [String(items)]
+  return normalizeIceUrls(values)
+}
+
+function normalizeIceUrls(values: string[]): string[] {
+  return values
+    .flatMap((item) => item.split(/[\s,]+/))
+    .map((item) => item.trim().replace(/^["']|["']$/g, ''))
+    .filter((item) => /^(stun|stuns|turn|turns):/i.test(item))
+    .filter((item, index, all) => all.indexOf(item) === index)
 }
 
 const defaultStunUrls = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
@@ -121,7 +144,10 @@ const defaultTurnUrls = [
   'turn:staticauth.openrelay.metered.ca:443?transport=tcp',
 ]
 const defaultTurnSecret = 'openrelayprojectsecret'
-const turnUrls = parseIceUrls(import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL)
+const envTurnUrls = parseIceUrls(
+  import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL,
+)
+const turnUrls = envTurnUrls
 let cachedIceServers: RTCIceServer[] | null = null
 
 function toBase64(bytes: Uint8Array): string {
@@ -172,18 +198,22 @@ async function getIceServers(): Promise<RTCIceServer[]> {
     })
   }
 
-  // Log the URLs and whether credentials exist. Never log the credential itself.
+  // Log names + URLs + auth presence only. Never log a credential or token.
+  console.info('[call] TURN env config', {
+    VITE_TURN_URLS: envTurnUrls.length > 0,
+    VITE_TURN_USERNAME: Boolean(import.meta.env?.VITE_TURN_USERNAME),
+    VITE_TURN_CREDENTIAL: Boolean(import.meta.env?.VITE_TURN_CREDENTIAL),
+    source: envTurnUrls.length > 0 ? 'VITE_TURN_URLS' : 'default-openrelay',
+  })
   console.info(
     '[call] ICE servers',
-    servers
-      .flatMap((server) =>
-        typeof server.urls === 'string' ? [server.urls] : server.urls,
-      )
-      .join(', '),
-    '| credentials:',
-    servers.some((server) => Boolean(server.username) && Boolean(server.credential))
-      ? 'configured'
-      : 'missing',
+    servers.map((server) => ({
+      urls: typeof server.urls === 'string' ? [server.urls] : server.urls,
+      auth:
+        server.username && server.credential
+          ? 'username+credential set'
+          : 'missing',
+    })),
   )
   cachedIceServers = servers
   return servers
