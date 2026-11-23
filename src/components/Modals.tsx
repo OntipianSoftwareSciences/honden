@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import CuteLoader from './CuteLoader'
 import type {
   AccountUser,
   DeviceSession,
@@ -187,7 +188,14 @@ export function ProfileModal({ user, onClose, onSave }: ProfileModalProps) {
             onClick={() => void handleSave()}
             className="rounded-xl bg-cyan-400 px-5 py-2 text-sm font-semibold text-slate-950 shadow-[0_0_25px_rgba(34,211,238,0.3)] transition hover:bg-cyan-300 disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Save profile'}
+            {saving ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <CuteLoader size="sm" label="Saving profile" />
+                Saving…
+              </span>
+            ) : (
+              'Save profile'
+            )}
           </button>
         </div>
       </div>

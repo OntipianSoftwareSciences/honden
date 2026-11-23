@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import CuteLoader from './CuteLoader'
 import type { GifResult } from '../types'
 
 type Props = {
@@ -220,7 +221,12 @@ export default function MediaPicker({ onEmoji, onGif, onClose }: Props) {
             </p>
           )}
           {error && <p className="mt-2 text-[11px] text-amber-300">{error}</p>}
-          {loading && <p className="mt-2 text-[11px] text-cyan-300">Searching…</p>}
+          {loading && (
+            <p className="mt-2 flex items-center gap-2 text-[11px] text-cyan-300">
+              <CuteLoader size="sm" label="Searching" />
+              Searching…
+            </p>
+          )}
 
           <div className="mt-3 grid max-h-52 grid-cols-3 gap-2 overflow-y-auto">
             {results.map((gif) => (

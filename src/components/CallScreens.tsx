@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Mic, MicOff, Phone, PhoneOff, SwitchCamera, Video, VideoOff } from 'lucide-react'
+import CuteLoader from './CuteLoader'
 import type { CallSnapshot } from '../webrtc/callManager'
 import {
   playCallConnected,
@@ -141,6 +142,7 @@ export default function CallScreens({
 
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
+            <CuteLoader size="lg" label="Connecting call" />
             <p className="text-xl font-bold text-warm-charcoal lg:text-2xl">
               {snapshot.notice === 'Reconnecting...'
                 ? 'Reconnecting...'

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import CuteLoader from '../components/CuteLoader'
 import { apiUrl } from '../api/client'
 
 type Props = {
@@ -277,7 +278,14 @@ export default function Onboarding({ onDone, invite = false }: Props) {
             </p>
           )}
           <button type="submit" className={primaryButton} disabled={busy}>
-            Reset password
+            {busy ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <CuteLoader size="sm" label="Resetting password" />
+                Resetting…
+              </span>
+            ) : (
+              'Reset password'
+            )}
           </button>
         </form>
         <button
@@ -337,7 +345,14 @@ export default function Onboarding({ onDone, invite = false }: Props) {
             </p>
           )}
           <button type="submit" className={primaryButton} disabled={busy}>
-            Create account
+            {busy ? (
+              <span className="inline-flex items-center justify-center gap-2">
+                <CuteLoader size="sm" label="Creating account" />
+                Creating account…
+              </span>
+            ) : (
+              'Create account'
+            )}
           </button>
         </form>
         <button
@@ -388,7 +403,14 @@ export default function Onboarding({ onDone, invite = false }: Props) {
           </p>
         )}
         <button type="submit" className={primaryButton} disabled={busy}>
-          Log in
+          {busy ? (
+            <span className="inline-flex items-center justify-center gap-2">
+              <CuteLoader size="sm" label="Logging in" />
+              Logging in…
+            </span>
+          ) : (
+            'Log in'
+          )}
         </button>
       </form>
       <button

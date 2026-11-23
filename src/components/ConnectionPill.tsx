@@ -1,3 +1,4 @@
+import CuteLoader from './CuteLoader'
 import type { ConnectionStatus } from '../types'
 
 const config: Record<
@@ -49,7 +50,16 @@ type Props = {
 export default function ConnectionPill({ status, onRetry }: Props) {
   const { label, dot, className } = config[status]
   const pill = `inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`
-  const marker = <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+  const busy =
+    status === 'connecting' ||
+    status === 'reconnecting' ||
+    status === 'syncing' ||
+    status === 'waking'
+  const marker = busy ? (
+    <CuteLoader size="sm" label={label} />
+  ) : (
+    <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+  )
 
   if (status === 'unreachable') {
     return (

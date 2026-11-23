@@ -433,6 +433,7 @@ export default function App() {
   const layout = useLayoutInfo()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [threads, setThreads] = useState<Thread[]>(loadThreads)
+  const [chatsLoading, setChatsLoading] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>(loadChatBackup)
   const [blockedGlobalSenders, setBlockedGlobalSenders] = useState<string[]>(loadBlockedGlobalSenders)
   const [invite, setInvite] = useState<Invite>(currentInvite)
@@ -570,6 +571,7 @@ export default function App() {
     setMessages([])
     setActiveThreadId('')
     setBlockedGlobalSenders([])
+    setChatsLoading(true)
     void loadChatsFromServer()
       .then((chats) => {
         if (!active) return
@@ -577,6 +579,9 @@ export default function App() {
         setThreads(chats)
       })
       .catch(() => undefined)
+      .finally(() => {
+        if (active) setChatsLoading(false)
+      })
     return () => {
       active = false
     }
@@ -1159,6 +1164,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            loading={chatsLoading}
             onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
             onOpenThread={openThread}
@@ -1525,6 +1531,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            loading={chatsLoading}
             onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
             onOpenThread={openThread}

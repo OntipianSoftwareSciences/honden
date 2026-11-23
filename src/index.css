@@ -117,6 +117,26 @@
     transform-origin: center;
   }
 
+  .cute-loader {
+    animation: cute-breathe 3.2s ease-in-out infinite;
+  }
+
+  .cute-loader__arc {
+    animation: cute-spin 4.8s linear infinite;
+  }
+
+  .cute-loader__face {
+    animation: cute-face-bob 3.2s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cute-loader,
+    .cute-loader__arc,
+    .cute-loader__face {
+      animation: none;
+    }
+  }
+
   .typing-indicator {
     display: inline-flex;
     align-items: center;
@@ -232,6 +252,32 @@
   }
   65% {
     transform: scale(1.04);
+  }
+}
+
+@keyframes cute-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes cute-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes cute-face-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1px);
   }
 }
 

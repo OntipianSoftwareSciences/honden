@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ConnectionPill from '../components/ConnectionPill'
+import CuteLoader from '../components/CuteLoader'
 import type { ChatMessage, ConnectionStatus } from '../types'
 import type { Thread } from '../store/messages'
 
@@ -7,6 +8,7 @@ type Props = {
   threads: Thread[]
   messages: ChatMessage[]
   connection: ConnectionStatus
+  loading?: boolean
   onRetry: () => void
   onOpenSettings: () => void
   onOpenThread: (id: string) => void
@@ -19,6 +21,7 @@ export default function EmptyChat({
   threads,
   messages,
   connection,
+  loading = false,
   onRetry,
   onOpenSettings,
   onOpenThread,
@@ -59,7 +62,10 @@ export default function EmptyChat({
 
         <section className={compact ? 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4' : 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-8 sm:px-10'}>
           <div className={`flex flex-col gap-3 ${compact ? 'mb-4' : 'mb-6 sm:flex-row sm:items-center sm:justify-between'}`}>
-            <h1 className={`font-bold text-warm-charcoal ${compact ? 'readable-text' : 'text-[20px]'}`}>Your conversations</h1>
+            <h1 className={`flex items-center gap-2 font-bold text-warm-charcoal ${compact ? 'readable-text' : 'text-[20px]'}`}>
+              Your conversations
+              {loading && <CuteLoader size="sm" label="Loading conversations" />}
+            </h1>
             <div className={`flex flex-col gap-2 ${compact ? 'hidden' : 'sm:flex-row'}`}>
               <button
                 type="button"
