@@ -30,6 +30,7 @@ type SignalingSender = (event: SignalEvent) => void
 
 const micMissingMessage =
   'No microphone found on this device, voice call cannot start, use a USB headset or your phone'
+const noCameraMessage = 'No camera found, use Voice call instead'
 
 type CallStage =
   | 'getUserMedia'
@@ -586,20 +587,14 @@ class CallManager {
   private async ensureLocalStream() {
     if (this.local) return this.local
 
-    // Always ask for the microphone on its own. A missing mic cannot be mistaken for
-    // a missing camera, and cannot be reported as a generic "couldn't connect".
-    const audio = await this.tryGetMedia({ audio: true, video: false })
-    if (!audio || audio.getAudioTracks().length === 0) {
-      throw new DOMException(micMissingMessage, 'NotFoundError')
-    }
-    this.micFound = true
-
-    const video: MediaTrackConstraints = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    }
-
+    // Voice calls ask for the microphone only. A missing camera can never break
+    // this path because it is never requested.
     if (this.kind === 'voice') {
+      const audio = await this.tryGetMedia({ audio: true, video: false })
+      if (!audio || audio.getAudioTracks().length === 0) {
+        throw new DOMException(micMissingMessage, 'NotFoundError')
+      }
+      this.micFound = true
       this.local = audio
       this.notice = ''
       await this.refreshCameras()
@@ -607,33 +602,46 @@ class CallManager {
       return this.local
     }
 
-    // Video is optional. If it is unavailable for any reason, keep the audio call alive.
-    let videoStream: MediaStream | null = null
-    let videoNotice = ''
+    // Video calls ask for audio + video together. If this device has no camera,
+    // keep the audio path alive and say so in plain words.
+    let media: MediaStream | null = null
+    let cameraMissing = false
     try {
-      videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video })
-      if (videoStream.getVideoTracks().length === 0) {
-        videoStream = null
-        videoNotice = 'No camera found, voice call only'
-      }
+      media = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
     } catch (error) {
+      if (errorDetails(error).name !== 'NotFoundError') throw error
       logErrorName('camera unavailable', error)
-      videoNotice =
-        errorDetails(error).name === 'NotFoundError'
-          ? 'No camera found, voice call only'
-          : 'Camera unavailable, voice call only'
+      cameraMissing = true
     }
 
-    const combined = new MediaStream()
-    for (const track of audio.getTracks()) combined.addTrack(track)
-    for (const track of videoStream?.getVideoTracks() ?? []) combined.addTrack(track)
-    this.local = combined
-    this.cameraFound = Boolean(videoStream)
-    if (videoStream) {
-      this.notice = ''
-    } else {
+    if (cameraMissing) {
+      const audio = await this.tryGetMedia({ audio: true, video: false })
+      if (!audio || audio.getAudioTracks().length === 0) {
+        throw new DOMException(micMissingMessage, 'NotFoundError')
+      }
+      this.micFound = true
+      this.local = audio
+      this.cameraFound = false
       this.kind = 'voice'
-      this.notice = videoNotice
+      this.notice = noCameraMessage
+      await this.refreshCameras()
+      return this.local
+    }
+
+    if (!media || media.getAudioTracks().length === 0) {
+      for (const track of media?.getTracks() ?? []) track.stop()
+      throw new DOMException(micMissingMessage, 'NotFoundError')
+    }
+
+    this.micFound = true
+    this.local = media
+    if (media.getVideoTracks().length === 0) {
+      this.cameraFound = false
+      this.kind = 'voice'
+      this.notice = noCameraMessage
+    } else {
+      this.cameraFound = true
+      this.notice = ''
     }
     await this.refreshCameras()
     return this.local
@@ -711,6 +719,7 @@ class CallManager {
     }
 
     const activeKind = this.kind
+    this.lastKind = activeKind
     console.info('[call] invite sent', { callId: this.callId, to: peerId, kind: activeKind })
     this.emitSignal({
       type: 'call:invite',

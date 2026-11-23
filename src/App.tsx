@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Lock, Phone } from 'lucide-react'
+import { Lock, Phone, Video } from 'lucide-react'
 import CallScreens from './components/CallScreens'
 import ConnectionPill from './components/ConnectionPill'
 import MediaPicker from './components/MediaPicker'
@@ -925,6 +925,13 @@ export default function App() {
     void callManager.startOutgoing(activeThreadId, kind, callPeerName(activeThreadId))
   }
 
+  function callAgain(kind: CallKind) {
+    const peerId = call.peerId || activeThreadId
+    if (!peerId) return
+    const peerName = peerId === activeThreadId ? callPeerName(peerId) : `@${peerId}`
+    void callManager.startOutgoing(peerId, kind, peerName)
+  }
+
   function insertEmoji(emoji: string) {
     const node = composerRef.current
     const start = node?.selectionStart ?? draft.length
@@ -1183,15 +1190,26 @@ export default function App() {
               />
             </div>
             {!isGlobal && (
-              <button
-                type="button"
-                onClick={() => startCall('video')}
-                aria-label={`Call @${thread?.username ?? 'someone'}`}
-                className="flex min-h-12 shrink-0 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
-              >
-                <Phone size={16} className="text-heart-pink" />
-                <span className="hidden sm:inline">Call</span>
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => startCall('voice')}
+                  aria-label={`Voice call @${thread?.username ?? 'someone'}`}
+                  className="flex min-h-12 items-center gap-1.5 rounded-xl border border-heart-pink bg-white px-2.5 py-2 text-xs font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11 md:text-sm"
+                >
+                  <Phone size={16} />
+                  <span>Voice</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startCall('video')}
+                  aria-label={`Video call @${thread?.username ?? 'someone'}`}
+                  className="flex min-h-12 items-center gap-1.5 rounded-xl bg-heart-pink px-2.5 py-2 text-xs font-bold text-white transition hover:bg-deep-rose md:min-h-11 md:text-sm"
+                >
+                  <Video size={16} />
+                  <span>Video</span>
+                </button>
+              </div>
             )}
             {layout.columns === 2 && (
               <button
@@ -1539,6 +1557,8 @@ export default function App() {
         onReject={() => callManager.reject()}
         onHangup={() => callManager.hangup()}
         onRetry={() => void callManager.retry()}
+        onStartVoice={() => callAgain('voice')}
+        onStartVideo={() => callAgain('video')}
         onToggleMic={() => callManager.toggleMic()}
         onToggleCamera={() => callManager.toggleCamera()}
         onSwitchCamera={() => void callManager.switchCamera()}

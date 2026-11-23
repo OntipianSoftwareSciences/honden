@@ -14,6 +14,8 @@ type Props = {
   onReject: () => void
   onHangup: () => void
   onRetry: () => void
+  onStartVoice: () => void
+  onStartVideo: () => void
   onToggleMic: () => void
   onToggleCamera: () => void
   onSwitchCamera: () => void
@@ -25,6 +27,8 @@ export default function CallScreens({
   onReject,
   onHangup,
   onRetry,
+  onStartVoice,
+  onStartVideo,
   onToggleMic,
   onToggleCamera,
   onSwitchCamera,
@@ -66,17 +70,19 @@ export default function CallScreens({
   if (snapshot.state === 'idle') return null
 
   if (snapshot.state === 'incoming') {
+    const isVideo = snapshot.kind === 'video'
+    const caller = snapshot.peerName || (snapshot.peerId ? `@${snapshot.peerId}` : '@someone')
     return (
       <div className="fixed inset-0 z-50 flex h-[100dvh] w-full items-center justify-center overflow-hidden bg-warm-cream p-4">
         <div className="w-full max-w-sm rounded-3xl border border-border bg-white p-6 shadow-soft">
           <div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-soft-blush text-heart-pink">
-            <Phone size={28} />
+            {isVideo ? <Video size={28} /> : <Phone size={28} />}
           </div>
           <h2 className="text-center text-xl font-bold text-warm-charcoal lg:text-2xl">
-            {snapshot.peerName || snapshot.peerId || 'Someone'} is calling
+            {isVideo ? 'Video' : 'Voice'} call from {caller}
           </h2>
           <p className="mt-2 text-center text-[13px] text-soft-grey">
-            @{snapshot.peerId || 'someone'} · Only you and {snapshot.peerName || snapshot.peerId || 'someone'} can see this call.
+            Only you and {caller} can see this call.
           </p>
           <div className="mt-6 flex gap-3">
             <button
@@ -91,7 +97,7 @@ export default function CallScreens({
               onClick={onAccept}
               className="min-h-12 flex-1 rounded-xl bg-heart-pink px-3 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
             >
-              Answer
+              {isVideo ? 'Answer as Video' : 'Answer as Voice'}
             </button>
           </div>
         </div>
@@ -122,11 +128,16 @@ export default function CallScreens({
             {snapshot.cameraLabel}
           </div>
         )}
-        {snapshot.state === 'connected' && (
-          <div className="absolute left-3 top-3 z-20 rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-heart-pink shadow-soft">
-            Connected
+        <div className="absolute left-3 top-3 z-20 flex flex-wrap gap-2">
+          <div className="rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-warm-charcoal shadow-soft">
+            {snapshot.kind === 'video' ? 'Video call' : 'Voice call'}
           </div>
-        )}
+          {snapshot.state === 'connected' && (
+            <div className="rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-heart-pink shadow-soft">
+              Connected
+            </div>
+          )}
+        </div>
 
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
@@ -171,6 +182,24 @@ export default function CallScreens({
             <p className="text-[13px] text-soft-grey">
               {snapshot.peerName || snapshot.peerId || 'Contact'}
             </p>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={onStartVoice}
+                className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-5 py-3 text-base font-bold text-heart-pink transition hover:bg-soft-blush"
+              >
+                <Phone size={18} />
+                Voice
+              </button>
+              <button
+                type="button"
+                onClick={onStartVideo}
+                className="flex min-h-12 items-center gap-2 rounded-xl bg-heart-pink px-5 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
+              >
+                <Video size={18} />
+                Video
+              </button>
+            </div>
           </div>
         )}
       </div>

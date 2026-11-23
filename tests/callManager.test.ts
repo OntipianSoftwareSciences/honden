@@ -228,7 +228,7 @@ test('video call connects second', async () => {
 
   await placeCall('video')
 
-  assert.equal((constraints?.video as MediaTrackConstraints)?.width?.ideal, 1280)
+  assert.deepEqual(constraints, { audio: true, video: true })
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'video')
   assert.equal(manager.snapshot().state, 'connected')
   assert.equal(manager.snapshot().error, '')
@@ -340,7 +340,21 @@ test('voice-only call works with no camera', async () => {
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'voice')
 })
 
-test('video call falls back to voice when there is no camera', async () => {
+test('voice call never requests video even when a camera is present', async () => {
+  const requested: MediaStreamConstraints[] = []
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    return new FakeMediaStream([fakeTrack('audio')])
+  }
+
+  await placeCall('voice')
+
+  assert.deepEqual(requested, [{ audio: true, video: false }])
+  assert.equal(manager.snapshot().kind, 'voice')
+  assert.equal(manager.snapshot().notice, '')
+})
+
+test('video call with no camera keeps the voice path working', async () => {
   enumerateDevicesImpl = async () => []
   const requested: MediaStreamConstraints[] = []
   getUserMediaImpl = async (next) => {
@@ -353,16 +367,28 @@ test('video call falls back to voice when there is no camera', async () => {
 
   await placeCall('video')
 
-  assert.equal(requested.length, 2)
-  assert.deepEqual(requested[0], { audio: true, video: false })
-  assert.equal(requested[1].audio, false)
+  assert.deepEqual(requested, [
+    { audio: true, video: true },
+    { audio: true, video: false },
+  ])
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
-  assert.equal(snapshot.notice, 'No camera found, voice call only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'voice')
   assert.ok(warnings.includes('[call] camera unavailable: NotFoundError'))
   assertNoMessageLogged('Requested device not found')
+})
+
+test('video call with a stream but no video track shows the plain camera message', async () => {
+  getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio')])
+
+  await placeCall('video')
+
+  const snapshot = manager.snapshot()
+  assert.equal(snapshot.state, 'connected')
+  assert.equal(snapshot.kind, 'voice')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
 })
 
 test('missing microphone fails with a plain message, not a generic connect error', async () => {
@@ -374,8 +400,10 @@ test('missing microphone fails with a plain message, not a generic connect error
 
   await manager.startOutgoing('skypuppy', 'video')
 
-  assert.equal(requested.length, 1)
-  assert.deepEqual(requested[0], { audio: true, video: false })
+  assert.deepEqual(requested, [
+    { audio: true, video: true },
+    { audio: true, video: false },
+  ])
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'ended')
   assert.equal(
