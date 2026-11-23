@@ -351,6 +351,10 @@ export default function Settings({
                 />
               </div>
             )}
+            <p className={`mt-3 ${noteText}`}>
+              On iPhone, push only works after Add to Home Screen, open from the Home Screen icon,
+              and Allow notifications there. It will not work in a regular Safari tab.
+            </p>
           </section>
 
           <section className="rounded-2xl border border-border bg-warm-cream p-6">

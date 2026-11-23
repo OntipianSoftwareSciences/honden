@@ -842,12 +842,13 @@ app.get('/api/messages', (req, res) => {
     ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
     : 200
 
-  let visible = messages.filter((message) =>
-    chatId === '*'
-      ? canAccessConversation(message.sender, message.recipient, viewer)
-      : message.chatId === chatId &&
-        canAccessConversation(message.sender, message.recipient, viewer),
-  )
+  let visible = messages.filter((message) => {
+    if (message.chatId === globalThreadId) return chatId === '*' || chatId === globalThreadId
+    return (
+      canAccessConversation(message.sender, message.recipient, viewer) &&
+      (chatId === '*' || message.chatId === chatId)
+    )
+  })
   if (cursor) visible = visible.filter((item) => isAfterCursor(item.time, item.id, cursor))
   visible.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id))
   res.json(visible.slice(0, limit))
@@ -983,6 +984,7 @@ function sendIfOpen(socket: WebSocket, payload: unknown): void {
 }
 
 function canReceive(client: WsClient, message: StoredMessage): boolean {
+  if (message.chatId === globalThreadId) return true
   return canAccessConversation(message.sender, message.recipient, client.user)
 }
 

@@ -146,10 +146,24 @@ class CallManager {
   private error = ''
   private notice = ''
   private send: SignalingSender = () => undefined
+  private signalingReady = false
+  private pendingSignals: SignalEvent[] = []
   private listeners = new Set<(snapshot: CallSnapshot) => void>()
 
   setSignalingSender(sender: SignalingSender) {
     this.send = sender
+    this.signalingReady = true
+    if (this.pendingSignals.length === 0) return
+    const queued = this.pendingSignals.splice(0)
+    for (const event of queued) this.send(event)
+  }
+
+  private emitSignal(event: SignalEvent) {
+    if (!this.signalingReady) {
+      this.pendingSignals.push(event)
+      return
+    }
+    this.send(event)
   }
 
   subscribe(listener: (snapshot: CallSnapshot) => void) {
@@ -290,7 +304,7 @@ class CallManager {
             sdpMid: event.candidate.sdpMid,
             sdpMLineIndex: event.candidate.sdpMLineIndex,
           }
-      this.send({
+      this.emitSignal({
         type: 'call:ice',
         to: this.peerId,
         callId: this.callId,
@@ -372,9 +386,12 @@ class CallManager {
       } else {
         stream = await this.tryGetMedia({ audio: false, video })
         if (stream) {
-          this.notice = 'No microphone found'
+          this.notice = 'No microphone found, check Pop!_OS Settings > Privacy'
         } else {
-          throw new DOMException('No microphone found', 'NotFoundError')
+          throw new DOMException(
+            'No microphone found, check Pop!_OS Settings > Privacy',
+            'NotFoundError',
+          )
         }
       }
     }
@@ -414,7 +431,7 @@ class CallManager {
 
     const activeKind = this.kind
     console.info('[call] invite sent', { callId: this.callId, to: peerId, kind: activeKind })
-    this.send({
+    this.emitSignal({
       type: 'call:invite',
       to: peerId,
       callId: this.callId,
@@ -431,7 +448,7 @@ class CallManager {
       kind: event.kind,
     })
     if (this.state !== 'idle') {
-      this.send({ type: 'call:reject', to: event.from, callId: event.callId })
+      this.emitSignal({ type: 'call:reject', to: event.from, callId: event.callId })
       return
     }
     this.peerId = event.from
@@ -455,7 +472,7 @@ class CallManager {
       const pc = this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
       stage = 'signaling'
-      this.send({
+      this.emitSignal({
         type: 'call:accept',
         to: this.peerId,
         callId: this.callId,
@@ -467,7 +484,7 @@ class CallManager {
 
   reject() {
     if (this.peerId && this.callId) {
-      this.send({
+      this.emitSignal({
         type: 'call:reject',
         to: this.peerId,
         callId: this.callId,
@@ -494,7 +511,7 @@ class CallManager {
       stage = 'offer'
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      this.send({
+      this.emitSignal({
         type: 'call:offer',
         to: this.peerId,
         callId: this.callId,
@@ -521,7 +538,7 @@ class CallManager {
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
       console.info('[call] answer sent', { callId: this.callId, to: this.peerId })
-      this.send({
+      this.emitSignal({
         type: 'call:answer',
         to: this.peerId,
         callId: this.callId,
@@ -579,7 +596,7 @@ class CallManager {
   hangup() {
     const callId = this.callId
     if (this.peerId && callId) {
-      this.send({ type: 'call:hangup', to: this.peerId, callId })
+      this.emitSignal({ type: 'call:hangup', to: this.peerId, callId })
     }
     this.teardown()
     this.state = 'ended'

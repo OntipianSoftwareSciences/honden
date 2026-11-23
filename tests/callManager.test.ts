@@ -383,7 +383,10 @@ test('video call works without a microphone and explains why', async () => {
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'video')
-  assert.equal(snapshot.notice, 'No microphone found')
+  assert.equal(
+    snapshot.notice,
+    'No microphone found, check Pop!_OS Settings > Privacy',
+  )
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'video')
   assertNoMessageLogged('Requested device not found')
 })
@@ -397,7 +400,10 @@ test('no microphone or camera fails with a plain message', async () => {
 
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'ended')
-  assert.match(snapshot.error, /No microphone found/)
+  assert.match(
+    snapshot.error,
+    /No microphone found, check Pop!_OS Settings > Privacy/,
+  )
   assert.ok(warnings.includes('[call] getUserMedia failed: NotFoundError'))
   assertNoMessageLogged('No input device found')
 })

@@ -710,10 +710,12 @@ app.get('/api/messages', (req, res) => {
     const limit = Number.isFinite(requestedLimit)
         ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 200)
         : 200;
-    let visible = messages.filter((message) => chatId === '*'
-        ? canAccessConversation(message.sender, message.recipient, viewer)
-        : message.chatId === chatId &&
-            canAccessConversation(message.sender, message.recipient, viewer));
+    let visible = messages.filter((message) => {
+        if (message.chatId === globalThreadId)
+            return chatId === '*' || chatId === globalThreadId;
+        return (canAccessConversation(message.sender, message.recipient, viewer) &&
+            (chatId === '*' || message.chatId === chatId));
+    });
     if (cursor)
         visible = visible.filter((item) => isAfterCursor(item.time, item.id, cursor));
     visible.sort((a, b) => a.time.localeCompare(b.time) || a.id.localeCompare(b.id));
@@ -831,6 +833,8 @@ function sendIfOpen(socket, payload) {
         socket.send(JSON.stringify(payload));
 }
 function canReceive(client, message) {
+    if (message.chatId === globalThreadId)
+        return true;
     return canAccessConversation(message.sender, message.recipient, client.user);
 }
 function broadcastMessage(message) {
