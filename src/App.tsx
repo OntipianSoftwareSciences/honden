@@ -22,6 +22,7 @@ import {
   importPublicKey,
   randomId,
   restorePrivateKey,
+  samePublicJwk,
   type EncryptedPayload,
   type Identity,
   type KeyBackup,
@@ -96,6 +97,17 @@ const localPeople = [
 
 const ecdh = { name: 'ECDH', namedCurve: 'P-256' } as const
 const unreadableMessage = "This message couldn't be read on this device."
+const keyMismatchMessage =
+  'Log in again to restore your messages on this device. Your saved key was out of date.'
+const genericKeyError = "We couldn't load your encryption key. Try logging in again."
+
+class KeyMismatchError extends Error {
+  constructor() {
+    super(keyMismatchMessage)
+    this.name = 'KeyMismatchError'
+  }
+}
+
 const globalThreadId = '#honey-den'
 const globalThread: Thread = {
   id: globalThreadId,
@@ -216,6 +228,18 @@ async function lookupAccount(username: string): Promise<string | null> {
   }
 }
 
+/** `undefined` means the server could not be checked; `null` means no key is stored yet. */
+async function fetchPublicJwk(username: string): Promise<JsonWebKey | null | undefined> {
+  try {
+    const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(username)}`))
+    if (!response.ok) return undefined
+    const data = (await response.json()) as { publicKey?: JsonWebKey; publicJwk?: JsonWebKey }
+    return data.publicJwk ?? data.publicKey ?? null
+  } catch {
+    return undefined
+  }
+}
+
 function outboxToChatMessage(item: OutboxMessage): ChatMessage {
   const timestamp = new Date(item.time).getTime()
   return {
@@ -263,20 +287,26 @@ async function identityFromPrivateJwk(privateJwk: JsonWebKey): Promise<Identity>
   return { privateKey, publicKey, publicJwk }
 }
 
-async function loadIdentity(username: string, password?: string): Promise<Identity> {
+type LoadedIdentity = { identity: Identity; fromBackup: boolean }
+
+async function loadIdentity(username: string, password?: string): Promise<LoadedIdentity> {
   const key = `honden.identity.${username}`
+  const serverJwk = await fetchPublicJwk(username)
+  let backupExists = false
   if (password) {
     const backup = await fetchKeyBackup()
+    backupExists = Boolean(backup)
     if (backup) {
       const privateJwk = await restorePrivateKey(backup, password)
       if (privateJwk) {
         try {
           const identity = await identityFromPrivateJwk(privateJwk)
-          const publicJwk: JsonWebKey = { ...privateJwk }
-          delete publicJwk.d
-          localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk }))
+          localStorage.setItem(
+            key,
+            JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }),
+          )
           console.log('Identity restored from account backup', username)
-          return identity
+          return { identity, fromBackup: true }
         } catch {}
       }
     }
@@ -293,15 +323,23 @@ async function loadIdentity(username: string, password?: string): Promise<Identi
         ['deriveBits'],
       )
       const publicKey = await importPublicKey(saved.publicJwk)
+      if (serverJwk && !samePublicJwk(saved.publicJwk, serverJwk)) {
+        throw new KeyMismatchError()
+      }
       console.log('Key loaded', username)
-      return { privateKey, publicKey, publicJwk: saved.publicJwk }
-    } catch {}
+      return { identity: { privateKey, publicKey, publicJwk: saved.publicJwk }, fromBackup: false }
+    } catch (error) {
+      if (error instanceof KeyMismatchError) throw error
+    }
   }
+  // An account with a public key but no backup lost its original key; a fresh
+  // login is allowed to establish one. With a backup, only the backup wins.
+  if (serverJwk && (!password || backupExists)) throw new KeyMismatchError()
   const identity = await createIdentity()
   const privateJwk = await crypto.subtle.exportKey('jwk', identity.privateKey)
   localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }))
   console.log('Key created', username)
-  return identity
+  return { identity, fromBackup: false }
 }
 
 async function ensureKeyBackup(identity: Identity, password?: string): Promise<void> {
@@ -314,12 +352,12 @@ async function ensureKeyBackup(identity: Identity, password?: string): Promise<v
   }
 }
 
-async function publishKey(username: string, identity: Identity) {
+async function publishKey(username: string, identity: Identity, fromBackup = false) {
   try {
     const response = await fetch(apiUrl('/api/public-key'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ username, publicJwk: identity.publicJwk }),
+      body: JSON.stringify({ username, publicJwk: identity.publicJwk, fromBackup }),
     })
     if (!response.ok) {
       console.error('Public key upload failed', username, response.status)
@@ -494,12 +532,19 @@ export default function App() {
     if (!authToken) return
     let active = true
     void loadIdentity(username)
-      .then(async (loaded) => {
+      .then(async ({ identity: loaded, fromBackup }) => {
         if (!active) return
         setIdentity(loaded)
-        await publishKey(username, loaded)
+        await publishKey(username, loaded, fromBackup)
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!active) return
+        if (error instanceof KeyMismatchError) {
+          signOut(error.message)
+          return
+        }
+        setNotice(genericKeyError)
+      })
     return () => {
       active = false
     }
@@ -713,7 +758,10 @@ export default function App() {
   async function encryptedWireText(item: OutboxMessage): Promise<string> {
     if (item.threadId === globalThreadId) return item.text
     if (item.text !== item.plain) return item.text
-    const current = identityRef.current ?? (await loadIdentity(item.sender).catch(() => null))
+    const loaded = identityRef.current
+      ? null
+      : await loadIdentity(item.sender).catch(() => null)
+    const current = identityRef.current ?? loaded?.identity ?? null
     if (!current) return item.text
     identityRef.current = current
     const key = await sharedKey(current, item.threadId)
@@ -869,12 +917,16 @@ export default function App() {
     setActiveThreadId('')
     setBlockedGlobalSenders([])
     if (token) localStorage.setItem('honden.token', token)
-    const loaded = await loadIdentity(name, password).catch(() => null)
-    if (loaded) {
-      setIdentity(loaded)
-      await publishKey(name, loaded)
-      await ensureKeyBackup(loaded, password)
+    let loaded: LoadedIdentity
+    try {
+      loaded = await loadIdentity(name, password)
+    } catch (error) {
+      signOut(error instanceof KeyMismatchError ? error.message : genericKeyError)
+      return
     }
+    setIdentity(loaded.identity)
+    await publishKey(name, loaded.identity, loaded.fromBackup)
+    await ensureKeyBackup(loaded.identity, password)
     syncCursorRef.current = null
     ownUsername = name
     setUsername(name)
@@ -1019,7 +1071,7 @@ export default function App() {
     }
   }
 
-  function signOut() {
+  function signOut(message = '') {
     clearChatStorage()
     setChatStorageUser(null)
     setThreads([])
@@ -1037,7 +1089,7 @@ export default function App() {
     setUsername(fallbackUsername)
     setUser({ ...defaultUser, id: fallbackUsername, username: fallbackUsername, displayName: 'You' })
     setIdentity(null)
-    setNotice('')
+    setNotice(message)
     setModal(null)
     setScreen('onboarding')
   }
@@ -1095,6 +1147,7 @@ export default function App() {
 
   let screenView = (
     <Onboarding
+      notice={notice}
       onDone={(name, loginNotice, token, password) =>
         void finishLogin(name, loginNotice, token, password)
       }
@@ -1105,6 +1158,7 @@ export default function App() {
     screenView = (
       <Onboarding
         invite
+        notice={notice}
         onDone={(name, loginNotice, token, password) => {
           void (async () => {
             await finishLogin(name, loginNotice, token, password)

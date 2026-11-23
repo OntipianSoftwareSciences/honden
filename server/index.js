@@ -533,18 +533,20 @@ app.post('/api/public-key', async (req, res) => {
         res.status(401).json({ error: accountError });
         return;
     }
-    const publicJwk = req.body?.publicJwk;
+    const body = req.body;
+    const publicJwk = body?.publicJwk;
+    const fromBackup = body?.fromBackup === true;
     const user = users.find((item) => item.username === username);
     if (!user || !publicJwk || typeof publicJwk !== 'object' || Array.isArray(publicJwk)) {
         res.status(400).json({ error: accountError });
         return;
     }
-    // Write-once while a key backup exists. An account without a backup has lost
-    // its original key, so the first login after the fix can establish a new one.
-    if (!user.publicJwk || !user.privateKeyBackup) {
+    // A client that just decrypted the password-wrapped backup proves it owns the
+    // account key, so it may repair a stale public key stored by an old device.
+    if (!user.publicJwk || !user.privateKeyBackup || fromBackup) {
         user.publicJwk = publicJwk;
         await persistUsers();
-        console.info('Public key stored', username);
+        console.info(`Public key stored${fromBackup ? ' from backup' : ''}`, username);
     }
     res.json({ ok: true, publicJwk: user.publicJwk });
 });
@@ -580,11 +582,11 @@ app.post('/api/key-backup', async (req, res) => {
         res.status(404).json({ error: accountError });
         return;
     }
-    if (!user.privateKeyBackup) {
-        user.privateKeyBackup = value;
-        await persistUsers();
-        console.info('Private key backup stored', viewer);
-    }
+    // Re-wrap the same private key after a password reset. The token proves the
+    // caller just supplied the account password, and the key itself never changes.
+    user.privateKeyBackup = value;
+    await persistUsers();
+    console.info('Private key backup stored', viewer);
     res.json({ ok: true });
 });
 app.get('/api/vapid-public-key', (_req, res) => {

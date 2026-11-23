@@ -15,6 +15,15 @@ export type KeyBackup = {
   ciphertext: string
 }
 
+/** True when two public JWKs describe the same P-256 point. */
+export function samePublicJwk(
+  a: JsonWebKey | null | undefined,
+  b: JsonWebKey | null | undefined,
+): boolean {
+  if (!a || !b) return false
+  return a.kty === b.kty && a.crv === b.crv && a.x === b.x && a.y === b.y
+}
+
 const curve = { name: 'ECDH', namedCurve: 'P-256' } as const
 
 function toBase64(bytes: Uint8Array): string {

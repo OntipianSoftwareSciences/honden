@@ -5,6 +5,7 @@ import { apiUrl } from '../api/client'
 type Props = {
   onDone: (username: string, notice?: string, token?: string, password?: string) => void | Promise<void>
   invite?: boolean
+  notice?: string
 }
 
 const primaryButton =
@@ -26,7 +27,7 @@ function cleanName(value: string) {
   return value.replace(/^@/, '').toLowerCase()
 }
 
-export default function Onboarding({ onDone, invite = false }: Props) {
+export default function Onboarding({ onDone, invite = false, notice = '' }: Props) {
   const [view, setView] = useState<'invite' | 'login' | 'signup' | 'recovery' | 'reset'>(
     invite ? 'invite' : 'login',
   )
@@ -160,6 +161,11 @@ export default function Onboarding({ onDone, invite = false }: Props) {
             <div className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-soft-blush text-2xl" aria-hidden="true">
               🍯
             </div>
+            {notice && (
+              <p className="mb-5 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
+                {notice}
+              </p>
+            )}
             {content}
             <p className="mt-4 text-[0.8125rem] text-soft-grey">
               No ads. No tracking. No selling your data.
