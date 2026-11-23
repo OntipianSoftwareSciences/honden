@@ -42,8 +42,8 @@ jobs:
 
       - name: Install Android SDK packages and NDK
         run: |
-          # Tauri 2.12 generated projects use compileSdk/targetSdk 37.
-          sdkmanager --install "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;28.2.13676358"
+          # Install SDK 34 for the pinned compileSdk/targetSdk in the patch step below.
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;28.2.13676358"
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
@@ -55,6 +55,12 @@ jobs:
 
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
+
+      - name: Set generated Android SDK target to 34
+        run: |
+          find src-tauri/gen/android -name '*.gradle.kts' -exec \
+            sed -i -E 's/(compileSdk[[:space:]]*=[[:space:]]*)37/\134/; s/(targetSdk[[:space:]]*=[[:space:]]*)37/\134/' {} +
+          grep -R -nE 'compileSdk|targetSdk' src-tauri/gen/android --include='*.gradle.kts'
 
       - name: Build ARM64 APK
         run: npx tauri android build --apk --target aarch64
