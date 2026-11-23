@@ -97,15 +97,38 @@ function logErrorName(label: string, error: unknown) {
   console.warn(`[call] ${label}: ${name}`)
 }
 
-const iceServers: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-]
+function parseIceUrls(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
 
-if (import.meta.env?.VITE_TURN_URL) {
+const defaultStunUrls = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
+// Public OpenRelay TURN fallback. Credentials are publicly documented by Metered/OpenRelay.
+// Override with VITE_TURN_URLS / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL in env.
+const defaultTurnUrls = [
+  'turn:openrelay.metered.ca:80',
+  'turn:openrelay.metered.ca:443',
+  'turn:openrelay.metered.ca:443?transport=tcp',
+  'turns:openrelay.metered.ca:443?transport=tcp',
+]
+const defaultTurnUsername = 'openrelayproject'
+const defaultTurnCredential = 'openrelayproject'
+
+const turnUrls = parseIceUrls(import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL)
+const iceServers: RTCIceServer[] = [{ urls: defaultStunUrls }]
+if (turnUrls.length > 0) {
   iceServers.push({
-    urls: import.meta.env.VITE_TURN_URL,
-    username: import.meta.env.VITE_TURN_USERNAME || undefined,
-    credential: import.meta.env.VITE_TURN_CREDENTIAL || undefined,
+    urls: turnUrls,
+    username: import.meta.env?.VITE_TURN_USERNAME || undefined,
+    credential: import.meta.env?.VITE_TURN_CREDENTIAL || undefined,
+  })
+} else {
+  iceServers.push({
+    urls: defaultTurnUrls,
+    username: defaultTurnUsername,
+    credential: defaultTurnCredential,
   })
 }
 
@@ -142,7 +165,11 @@ class CallManager {
   private cameraLabel = ''
   private cameraLabelTimer: number | undefined
   private connectTimer: number | undefined
+  private reconnectTimer: number | undefined
+  private iceRestartUsed = false
+  private reconnecting = false
   private pendingIce: RTCIceCandidateInit[] = []
+  private pendingAcceptCallId = ''
   private error = ''
   private notice = ''
   private send: SignalingSender = () => undefined
@@ -203,12 +230,24 @@ class CallManager {
     return `call-${Date.now()}-${Math.random().toString(36).slice(2)}`
   }
 
+  private logState(label: string) {
+    console.info('[call] state', {
+      callId: this.callId,
+      label,
+      state: this.state,
+      connection: this.pc?.connectionState ?? 'none',
+      ice: this.pc?.iceConnectionState ?? 'none',
+      signaling: this.pc?.signalingState ?? 'none',
+    })
+  }
+
   private startConnectTimer() {
     if (this.connectTimer !== undefined) window.clearTimeout(this.connectTimer)
     this.connectTimer = window.setTimeout(() => {
       if (this.state === 'calling' || this.state === 'connecting') {
         console.info('[call] connect timeout', { callId: this.callId })
-        this.fail("Couldn't connect, try again")
+        this.logState('connect-timeout')
+        this.fail('Call dropped, connection failed, try again, check your internet')
       }
     }, 15_000)
   }
@@ -226,8 +265,13 @@ class CallManager {
       window.clearTimeout(this.connectTimer)
       this.connectTimer = undefined
     }
+    this.clearReconnectTimer()
+    this.reconnecting = false
+    this.iceRestartUsed = false
+    this.notice = this.notice === 'Reconnecting...' ? '' : this.notice
     this.state = 'connected'
     console.info('[call] connected', { callId: this.callId })
+    this.logState('connected')
     this.emit()
   }
 
@@ -247,6 +291,13 @@ class CallManager {
     }
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer !== undefined) {
+      window.clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
+    }
+  }
+
   private teardown() {
     if (this.cameraLabelTimer !== undefined) {
       window.clearTimeout(this.cameraLabelTimer)
@@ -256,7 +307,11 @@ class CallManager {
       window.clearTimeout(this.connectTimer)
       this.connectTimer = undefined
     }
+    this.clearReconnectTimer()
+    this.iceRestartUsed = false
+    this.reconnecting = false
     this.pendingIce = []
+    this.pendingAcceptCallId = ''
     if (this.local) {
       for (const track of this.local.getTracks()) track.stop()
     }
@@ -322,21 +377,33 @@ class CallManager {
     }
 
     pc.onconnectionstatechange = () => {
+      this.logState('connectionstatechange')
       if (pc.connectionState === 'connected') {
         this.markConnected()
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        return
+      }
+      if (pc.connectionState === 'disconnected') {
+        void this.tryIceRestart('disconnected')
+        return
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         if (this.state !== 'ended') {
-          this.fail("Couldn't connect, try again")
+          void this.tryIceRestart('failed')
         }
       }
     }
 
     pc.oniceconnectionstatechange = () => {
+      this.logState('iceconnectionstatechange')
       if (
         pc.iceConnectionState === 'connected' ||
         pc.iceConnectionState === 'completed'
       ) {
         this.markConnected()
+        return
+      }
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        void this.tryIceRestart(pc.iceConnectionState)
       }
     }
 
@@ -410,7 +477,44 @@ class CallManager {
 
   private fail(message: string) {
     this.error = message
+    this.logState('fail')
     this.hangup()
+  }
+
+  private async tryIceRestart(reason: string) {
+    if (this.state === 'ended' || this.state === 'idle') return
+    if (!this.pc || !this.peerId || !this.callId) return
+    if (this.reconnecting) return
+    if (this.iceRestartUsed) {
+      this.fail('Call dropped, connection failed, try again, check your internet')
+      return
+    }
+    this.iceRestartUsed = true
+    this.reconnecting = true
+    this.notice = 'Reconnecting...'
+    if (this.state === 'connected') this.state = 'connecting'
+    this.logState(`ice-restart-${reason}`)
+    this.emit()
+    this.clearReconnectTimer()
+    this.reconnectTimer = window.setTimeout(() => {
+      if (this.reconnecting && this.state !== 'connected' && this.state !== 'ended') {
+        this.fail('Call dropped, connection failed, try again, check your internet')
+      }
+    }, 10_000)
+
+    try {
+      const offer = await this.pc.createOffer({ iceRestart: true })
+      await this.pc.setLocalDescription(offer)
+      this.emitSignal({
+        type: 'call:offer',
+        to: this.peerId,
+        callId: this.callId,
+        sdp: this.pc.localDescription ?? offer,
+      })
+    } catch (error) {
+      logErrorName('ice restart failed', error)
+      this.fail('Call dropped, connection failed, try again, check your internet')
+    }
   }
 
   async startOutgoing(peerId: string, kind: CallKind, peerName = '') {
@@ -448,6 +552,7 @@ class CallManager {
       kind: event.kind,
     })
     if (this.state !== 'idle') {
+      if (this.pendingAcceptCallId === event.callId) return
       this.emitSignal({ type: 'call:reject', to: event.from, callId: event.callId })
       return
     }
@@ -459,6 +564,10 @@ class CallManager {
     this.error = ''
     this.notice = ''
     this.emit()
+    if (this.pendingAcceptCallId === event.callId) {
+      this.pendingAcceptCallId = ''
+      void this.accept()
+    }
   }
 
   async accept() {
@@ -527,6 +636,7 @@ class CallManager {
       return
     }
     if (event.from) this.peerId = event.from
+    this.logState('offer-received')
 
     let stage: CallStage = 'peer connection'
     try {
@@ -544,6 +654,7 @@ class CallManager {
         callId: this.callId,
         sdp: pc.localDescription ?? answer,
       })
+      this.logState('answer-sent')
     } catch (error) {
       this.fail(callErrorText(stage, error))
     }
@@ -558,6 +669,7 @@ class CallManager {
       console.info('[call] answer received', { callId: this.callId, from: event.from })
       await this.pc?.setRemoteDescription(event.sdp)
       await this.flushIce()
+      this.logState('answer-applied')
     } catch (error) {
       this.fail(callErrorText(stage, error))
     }
@@ -569,10 +681,12 @@ class CallManager {
     }
     if (!this.pc?.remoteDescription) {
       this.pendingIce.push(event.candidate)
+      this.logState('ice-queued')
       return
     }
     try {
       await this.pc.addIceCandidate(event.candidate)
+      this.logState('ice-applied')
     } catch (error) {
       logErrorName('ice candidate failed', error)
       this.pendingIce.push(event.candidate)
@@ -725,7 +839,10 @@ class CallManager {
       void this.accept()
       return true
     }
-    if (this.state !== 'idle') return false
+    if (this.state !== 'idle') {
+      if (this.callId === callId) this.pendingAcceptCallId = callId
+      return false
+    }
     const peerName = typeof data.senderName === 'string' ? data.senderName : sender
     this.handleInvite({
       type: 'call:invite',
@@ -739,6 +856,7 @@ class CallManager {
       void this.accept()
       return true
     }
+    this.pendingAcceptCallId = callId
     return false
   }
 

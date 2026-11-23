@@ -129,8 +129,11 @@ export default function CallScreens({
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
             <p className="text-xl font-bold text-warm-charcoal lg:text-2xl">
-              {snapshot.state === 'calling' ? 'Calling' : 'Connecting'}{' '}
-              {snapshot.peerName || snapshot.peerId || 'someone'}...
+              {snapshot.notice === 'Reconnecting...'
+                ? 'Reconnecting...'
+                : snapshot.state === 'calling'
+                  ? `Calling ${snapshot.peerName || snapshot.peerId || 'someone'}...`
+                  : `Connecting ${snapshot.peerName || snapshot.peerId || 'someone'}...`}
             </p>
             <button
               type="button"
