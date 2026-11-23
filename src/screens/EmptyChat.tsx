@@ -42,7 +42,7 @@ export default function EmptyChat({
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg" aria-hidden="true">
             🍯
           </span>
-          <h2 className="readable-text font-bold text-warm-charcoal">HonDen</h2>
+          <h2 className="readable-text whitespace-nowrap font-bold text-warm-charcoal">HonDen</h2>
           <ConnectionPill status={connection} />
           {!compact && (
             <button

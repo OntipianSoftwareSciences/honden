@@ -42,7 +42,7 @@ export default function ConnectionPill({ status }: { status: ConnectionStatus })
     <span
       role="status"
       aria-live="polite"
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`}
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`}
     >
       <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden="true" />
       {label}

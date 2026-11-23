@@ -9,6 +9,11 @@ export type LayoutInfo = {
   label: string
 }
 
+const SIDE_WIDTH = 300
+const MIN_CHAT_WIDTH = 420
+const MIN_TWO_COLUMNS = SIDE_WIDTH + MIN_CHAT_WIDTH
+const MIN_THREE_COLUMNS = SIDE_WIDTH * 2 + MIN_CHAT_WIDTH
+
 const initialDpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
 
 export function zoomPercentFromDpr(dpr: number, baseline = initialDpr): number {
@@ -25,8 +30,8 @@ export function computeLayout(width: number, height: number, zoomPercent: number
 
   let mode: LayoutInfo['mode'] = 'Mobile'
   let columns: LayoutInfo['columns'] = 1
-  if (safeWidth >= 640) {
-    if (zoomedOut || safeWidth > 1200) {
+  if (safeWidth >= MIN_TWO_COLUMNS) {
+    if (safeWidth >= MIN_THREE_COLUMNS && (zoomedOut || safeWidth > 1200)) {
       mode = 'Desktop'
       columns = 3
     } else {
