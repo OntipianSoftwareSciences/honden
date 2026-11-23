@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import express, { type Request } from 'express'
 import { Pool } from 'pg'
 import { WebSocket, WebSocketServer } from 'ws'
-import webPush from 'web-push'
+import * as webPush from 'web-push'
 import {
   canAccessConversation,
   createSecret,
