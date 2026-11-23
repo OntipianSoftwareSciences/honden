@@ -14,6 +14,12 @@ services:
         fromDatabase:
           name: honden-db
           property: connectionString
+      # Generate these locally with `npm run vapid:keys`; set the values in the
+      # Render dashboard. Never put the private key in chat or in the repo.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
 
 databases:
   - name: honden-db

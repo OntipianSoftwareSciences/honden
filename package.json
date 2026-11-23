@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "start:server": "tsx server/index.ts",
     "start:host": "tsx server/index.ts",
+    "vapid:keys": "node scripts/generate-vapid.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

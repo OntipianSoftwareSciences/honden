@@ -5,6 +5,7 @@ import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
+import { disableCallPush, enableCallPush, pushSupported } from '../net/push'
 
 type Props = {
   settings: Settings
@@ -292,6 +293,28 @@ export default function Settings({
                 onChange={(next) => update('gentleNotifications', next)}
               />
             </div>
+            {pushSupported() && (
+              <div className="flex items-center justify-between gap-4 py-2">
+                <div>
+                  <p className="font-bold">Call notifications</p>
+                  <p className={noteText}>Incoming calls, even when the app is closed.</p>
+                </div>
+                <Toggle
+                  label="Call notifications"
+                  checked={settings.callNotifications}
+                  onChange={(next) => {
+                    void (async () => {
+                      if (next) {
+                        if (await enableCallPush()) update('callNotifications', true)
+                      } else {
+                        await disableCallPush()
+                        update('callNotifications', false)
+                      }
+                    })()
+                  }}
+                />
+              </div>
+            )}
           </section>
 
           <section className="rounded-2xl border border-border bg-warm-cream p-6">

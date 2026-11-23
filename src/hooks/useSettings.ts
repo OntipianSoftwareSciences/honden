@@ -7,6 +7,7 @@ export type Settings = {
   theme: ThemeName
   readReceipts: boolean
   gentleNotifications: boolean
+  callNotifications: boolean
   largeText: boolean
   simulateReplies: boolean
   relayUrl: string
@@ -28,6 +29,7 @@ const defaults: Settings = {
   theme: 'light',
   readReceipts: false,
   gentleNotifications: true,
+  callNotifications: false,
   largeText: false,
   simulateReplies: true,
   relayUrl: '',
