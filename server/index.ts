@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -44,11 +44,8 @@ type StoredUser = {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const legacyDataDir = join(here, 'data')
-const downloadsDir = join(here, 'downloads')
-const apkFile = join(downloadsDir, 'honden.apk')
 const apkReleaseUrl =
   'https://github.com/OntipianSoftwareSciences/honden/releases/download/apk-latest/honden.apk'
-mkdirSync(downloadsDir, { recursive: true })
 const errorCopy = 'Something went wrong on our side. Nothing was sent. Try again in a moment.'
 const accountError = "We couldn't find that account. Check the spelling and try again."
 const takenError = 'That @username is already taken. Try another one.'
@@ -827,11 +824,9 @@ app.get('/downloads/honden.apk', async (_req, res) => {
   res.setHeader('Content-Type', 'application/vnd.android.package-archive')
   res.setHeader('Content-Disposition', 'attachment; filename="honden.apk"')
   res.setHeader('Cache-Control', 'no-store')
-  if (existsSync(apkFile)) {
-    res.sendFile(apkFile)
-    return
-  }
   try {
+    // Always stream the current signed release asset; never fall back to a
+    // stale local file that could be an old unsigned APK.
     const upstream = await fetch(apkReleaseUrl, { redirect: 'follow' })
     if (!upstream.ok || !upstream.body) {
       throw new Error(`APK download returned ${upstream.status}`)
