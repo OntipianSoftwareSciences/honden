@@ -22,9 +22,14 @@ export type CallSnapshot = {
   remoteStream: MediaStream | null
   error: string
   notice: string
+  connectDiagnostic: string
+  retryAvailable: boolean
 }
 
 type SignalingSender = (event: SignalEvent) => void
+
+const micMissingMessage =
+  'No microphone found on this device, voice call cannot start, use a USB headset or your phone'
 
 type CallStage =
   | 'getUserMedia'
@@ -88,6 +93,7 @@ function callErrorText(stage: CallStage, error: unknown): string {
   const { name, message } = errorDetails(error)
   // Log only the error name. Never log error messages, SDP, or chat content.
   console.warn(`[call] ${stage} failed: ${name}`)
+  if (message === micMissingMessage) return micMissingMessage
   const plain = plainErrorNames[name] ?? 'unexpected error'
   return `${stageCopy[stage]} — ${name} (${plain}): ${message || 'no message provided'}`
 }
@@ -105,31 +111,86 @@ function parseIceUrls(value: string | undefined): string[] {
 }
 
 const defaultStunUrls = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
-// Public OpenRelay TURN fallback. Credentials are publicly documented by Metered/OpenRelay.
+// The old openrelay.metered.ca name now resolves to a blackhole address. OpenRelay's
+// current free endpoint is the static-auth host documented by Metered. Its shared secret
+// is public; we derive a short-lived username/credential pair from it in the browser.
 // Override with VITE_TURN_URLS / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL in env.
 const defaultTurnUrls = [
-  'turn:openrelay.metered.ca:80',
-  'turn:openrelay.metered.ca:443',
-  'turn:openrelay.metered.ca:443?transport=tcp',
-  'turns:openrelay.metered.ca:443?transport=tcp',
+  'turn:staticauth.openrelay.metered.ca:80',
+  'turn:staticauth.openrelay.metered.ca:443',
+  'turn:staticauth.openrelay.metered.ca:443?transport=tcp',
 ]
-const defaultTurnUsername = 'openrelayproject'
-const defaultTurnCredential = 'openrelayproject'
-
+const defaultTurnSecret = 'openrelayprojectsecret'
 const turnUrls = parseIceUrls(import.meta.env?.VITE_TURN_URLS || import.meta.env?.VITE_TURN_URL)
-const iceServers: RTCIceServer[] = [{ urls: defaultStunUrls }]
-if (turnUrls.length > 0) {
-  iceServers.push({
-    urls: turnUrls,
-    username: import.meta.env?.VITE_TURN_USERNAME || undefined,
-    credential: import.meta.env?.VITE_TURN_CREDENTIAL || undefined,
-  })
-} else {
-  iceServers.push({
-    urls: defaultTurnUrls,
-    username: defaultTurnUsername,
-    credential: defaultTurnCredential,
-  })
+let cachedIceServers: RTCIceServer[] | null = null
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+async function hmacSha1Base64(secret: string, value: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) return ''
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign'],
+  )
+  const signature = await globalThis.crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(value),
+  )
+  return toBase64(new Uint8Array(signature))
+}
+
+async function getIceServers(): Promise<RTCIceServer[]> {
+  if (cachedIceServers) return cachedIceServers
+
+  const servers: RTCIceServer[] = [{ urls: defaultStunUrls }]
+  const envUsername = import.meta.env?.VITE_TURN_USERNAME
+  const envCredential = import.meta.env?.VITE_TURN_CREDENTIAL
+  if (turnUrls.length > 0 && envUsername && envCredential) {
+    servers.push({
+      urls: turnUrls,
+      username: envUsername,
+      credential: envCredential,
+    })
+  } else {
+    if (turnUrls.length > 0) {
+      console.warn('[call] TURN URL set but username/credential missing, using default')
+    }
+    const username = `${Math.floor(Date.now() / 1000) + 86_400}:honden`
+    const credential = await hmacSha1Base64(defaultTurnSecret, username)
+    servers.push({
+      urls: defaultTurnUrls,
+      username,
+      credential,
+    })
+  }
+
+  // Log the URLs and whether credentials exist. Never log the credential itself.
+  console.info(
+    '[call] ICE servers',
+    servers
+      .flatMap((server) =>
+        typeof server.urls === 'string' ? [server.urls] : server.urls,
+      )
+      .join(', '),
+    '| credentials:',
+    servers.some((server) => Boolean(server.username) && Boolean(server.credential))
+      ? 'configured'
+      : 'missing',
+  )
+  cachedIceServers = servers
+  return servers
+}
+
+function signalLog(message: string, callId: string) {
+  console.info(`[call] ${message}`, { callId, date: new Date().toISOString() })
 }
 
 function idleSnapshot(): CallSnapshot {
@@ -147,6 +208,8 @@ function idleSnapshot(): CallSnapshot {
     remoteStream: null,
     error: '',
     notice: '',
+    connectDiagnostic: '',
+    retryAvailable: false,
   }
 }
 
@@ -172,6 +235,15 @@ class CallManager {
   private pendingAcceptCallId = ''
   private error = ''
   private notice = ''
+  private micFound = false
+  private cameraFound = false
+  private relayCandidateSeen = false
+  private candidateTypes: string[] = []
+  private connectDiagnostic = ''
+  private retryAvailable = false
+  private lastPeerId = ''
+  private lastKind: CallKind = 'voice'
+  private lastPeerName = ''
   private send: SignalingSender = () => undefined
   private signalingReady = false
   private pendingSignals: SignalEvent[] = []
@@ -215,6 +287,8 @@ class CallManager {
       remoteStream: this.remote,
       error: this.error,
       notice: this.notice,
+      connectDiagnostic: this.connectDiagnostic,
+      retryAvailable: this.retryAvailable,
     }
   }
 
@@ -241,15 +315,34 @@ class CallManager {
     })
   }
 
+  private clearDiagnostic() {
+    this.connectDiagnostic = ''
+    this.retryAvailable = false
+  }
+
+  private refreshDiagnostic() {
+    if (this.state !== 'calling' && this.state !== 'connecting') {
+      this.clearDiagnostic()
+      return
+    }
+    const ice = this.pc?.iceConnectionState ?? 'checking'
+    const turn = this.relayCandidateSeen ? 'working' : 'not working'
+    const mic = this.micFound ? 'found' : 'not found'
+    const camera = this.cameraFound ? 'found' : 'not found'
+    this.connectDiagnostic = `Still connecting, ICE state: ${ice}, TURN: ${turn}, Mic: ${mic}, Camera: ${camera}`
+    this.retryAvailable = true
+  }
+
   private startConnectTimer() {
     if (this.connectTimer !== undefined) window.clearTimeout(this.connectTimer)
     this.connectTimer = window.setTimeout(() => {
       if (this.state === 'calling' || this.state === 'connecting') {
         console.info('[call] connect timeout', { callId: this.callId })
         this.logState('connect-timeout')
-        this.fail('Call dropped, connection failed, try again, check your internet')
+        this.refreshDiagnostic()
+        this.emit()
       }
-    }, 15_000)
+    }, 10_000)
   }
 
   private markConnecting() {
@@ -269,6 +362,7 @@ class CallManager {
     this.reconnecting = false
     this.iceRestartUsed = false
     this.notice = this.notice === 'Reconnecting...' ? '' : this.notice
+    this.clearDiagnostic()
     this.state = 'connected'
     console.info('[call] connected', { callId: this.callId })
     this.logState('connected')
@@ -329,6 +423,11 @@ class CallManager {
     this.cameraOff = false
     this.cameras = []
     this.cameraLabel = ''
+    this.micFound = false
+    this.cameraFound = false
+    this.relayCandidateSeen = false
+    this.candidateTypes = []
+    this.clearDiagnostic()
   }
 
   private reset() {
@@ -340,18 +439,39 @@ class CallManager {
     this.kind = 'voice'
     this.error = ''
     this.notice = ''
+    this.clearDiagnostic()
     this.emit()
   }
 
-  private ensurePeerConnection() {
+  private async ensurePeerConnection() {
     if (this.pc) return this.pc
 
+    const iceServers = await getIceServers()
     const pc = new RTCPeerConnection({ iceServers })
     this.pc = pc
     this.remote = new MediaStream()
 
     pc.onicecandidate = (event) => {
-      if (!event.candidate || !this.callId || !this.peerId) return
+      if (!event.candidate) {
+        console.info('[call] ICE gathering complete', {
+          callId: this.callId,
+          candidateTypes: this.candidateTypes.join(',') || 'none',
+          turn: this.relayCandidateSeen ? 'working' : 'not working',
+        })
+        if (this.retryAvailable) {
+          this.refreshDiagnostic()
+          this.emit()
+        }
+        return
+      }
+      const type = event.candidate.type ?? 'unknown'
+      if (!this.candidateTypes.includes(type)) this.candidateTypes.push(type)
+      if (type === 'relay') this.relayCandidateSeen = true
+      if (this.retryAvailable) {
+        this.refreshDiagnostic()
+        this.emit()
+      }
+      if (!this.callId || !this.peerId) return
       const candidate = event.candidate.toJSON
         ? event.candidate.toJSON()
         : {
@@ -395,6 +515,10 @@ class CallManager {
 
     pc.oniceconnectionstatechange = () => {
       this.logState('iceconnectionstatechange')
+      if (this.retryAvailable) {
+        this.refreshDiagnostic()
+        this.emit()
+      }
       if (
         pc.iceConnectionState === 'connected' ||
         pc.iceConnectionState === 'completed'
@@ -428,41 +552,55 @@ class CallManager {
   private async ensureLocalStream() {
     if (this.local) return this.local
 
+    // Always ask for the microphone on its own. A missing mic cannot be mistaken for
+    // a missing camera, and cannot be reported as a generic "couldn't connect".
+    const audio = await this.tryGetMedia({ audio: true, video: false })
+    if (!audio || audio.getAudioTracks().length === 0) {
+      throw new DOMException(micMissingMessage, 'NotFoundError')
+    }
+    this.micFound = true
+
     const video: MediaTrackConstraints = {
       width: { ideal: 1280 },
       height: { ideal: 720 },
     }
 
     if (this.kind === 'voice') {
-      // A voice call never needs a camera, so a missing camera cannot fail it.
-      this.local = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      this.local = audio
       this.notice = ''
       await this.refreshCameras()
+      this.cameraFound = this.cameras.length > 0
       return this.local
     }
 
-    let stream = await this.tryGetMedia({ audio: true, video })
-    if (stream) {
+    // Video is optional. If it is unavailable for any reason, keep the audio call alive.
+    let videoStream: MediaStream | null = null
+    let videoNotice = ''
+    try {
+      videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video })
+      if (videoStream.getVideoTracks().length === 0) {
+        videoStream = null
+        videoNotice = 'No camera found, voice call only'
+      }
+    } catch (error) {
+      logErrorName('camera unavailable', error)
+      videoNotice =
+        errorDetails(error).name === 'NotFoundError'
+          ? 'No camera found, voice call only'
+          : 'Camera unavailable, voice call only'
+    }
+
+    const combined = new MediaStream()
+    for (const track of audio.getTracks()) combined.addTrack(track)
+    for (const track of videoStream?.getVideoTracks() ?? []) combined.addTrack(track)
+    this.local = combined
+    this.cameraFound = Boolean(videoStream)
+    if (videoStream) {
       this.notice = ''
     } else {
-      // One device is missing. Keep the call alive with whichever device works.
-      stream = await this.tryGetMedia({ audio: true, video: false })
-      if (stream) {
-        this.kind = 'voice'
-        this.notice = 'No camera found, voice call only'
-      } else {
-        stream = await this.tryGetMedia({ audio: false, video })
-        if (stream) {
-          this.notice = 'No microphone found, check Pop!_OS Settings > Privacy'
-        } else {
-          throw new DOMException(
-            'No microphone found, check Pop!_OS Settings > Privacy',
-            'NotFoundError',
-          )
-        }
-      }
+      this.kind = 'voice'
+      this.notice = videoNotice
     }
-    this.local = stream
     await this.refreshCameras()
     return this.local
   }
@@ -522,6 +660,9 @@ class CallManager {
     this.peerId = peerId
     this.peerName = peerName
     this.kind = kind
+    this.lastPeerId = peerId
+    this.lastPeerName = peerName
+    this.lastKind = kind
     this.callId = this.makeId()
     this.state = 'calling'
     this.emit()
@@ -560,6 +701,9 @@ class CallManager {
     this.peerName = event.peerName ?? ''
     this.callId = event.callId
     this.kind = event.kind
+    this.lastPeerId = event.from
+    this.lastPeerName = event.peerName ?? ''
+    this.lastKind = event.kind
     this.state = 'incoming'
     this.error = ''
     this.notice = ''
@@ -578,7 +722,7 @@ class CallManager {
     try {
       const stream = await this.ensureLocalStream()
       stage = 'peer connection'
-      const pc = this.ensurePeerConnection()
+      const pc = await this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
       stage = 'signaling'
       this.emitSignal({
@@ -588,6 +732,23 @@ class CallManager {
       })
     } catch (error) {
       this.fail(callErrorText(stage, error))
+    }
+  }
+
+  async retry() {
+    if (!this.retryAvailable || (this.state !== 'connecting' && this.state !== 'calling')) return
+    signalLog('Retry requested', this.callId)
+    this.clearDiagnostic()
+    this.notice = ''
+    if (this.pc && this.peerId && this.callId) {
+      this.iceRestartUsed = false
+      this.reconnecting = false
+      this.startConnectTimer()
+      await this.tryIceRestart('retry')
+      return
+    }
+    if (this.lastPeerId) {
+      await this.startOutgoing(this.lastPeerId, this.lastKind, this.lastPeerName)
     }
   }
 
@@ -615,7 +776,7 @@ class CallManager {
     try {
       const stream = await this.ensureLocalStream()
       stage = 'peer connection'
-      const pc = this.ensurePeerConnection()
+      const pc = await this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
       stage = 'offer'
       const offer = await pc.createOffer()
@@ -636,18 +797,18 @@ class CallManager {
       return
     }
     if (event.from) this.peerId = event.from
-    this.logState('offer-received')
+    signalLog('Call offer received', this.callId)
 
     let stage: CallStage = 'peer connection'
     try {
-      const pc = this.ensurePeerConnection()
+      const pc = await this.ensurePeerConnection()
       stage = 'signaling'
       await pc.setRemoteDescription(event.sdp)
       await this.flushIce()
       stage = 'answer'
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
-      console.info('[call] answer sent', { callId: this.callId, to: this.peerId })
+      signalLog('Call answer sent', this.callId)
       this.emitSignal({
         type: 'call:answer',
         to: this.peerId,
@@ -679,6 +840,7 @@ class CallManager {
     if (event.callId !== this.callId || !event.candidate) {
       return
     }
+    signalLog('ICE candidate received', this.callId)
     if (!this.pc?.remoteDescription) {
       this.pendingIce.push(event.candidate)
       this.logState('ice-queued')

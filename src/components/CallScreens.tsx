@@ -13,6 +13,7 @@ type Props = {
   onAccept: () => void
   onReject: () => void
   onHangup: () => void
+  onRetry: () => void
   onToggleMic: () => void
   onToggleCamera: () => void
   onSwitchCamera: () => void
@@ -23,6 +24,7 @@ export default function CallScreens({
   onAccept,
   onReject,
   onHangup,
+  onRetry,
   onToggleMic,
   onToggleCamera,
   onSwitchCamera,
@@ -135,13 +137,29 @@ export default function CallScreens({
                   ? `Calling ${snapshot.peerName || snapshot.peerId || 'someone'}...`
                   : `Connecting ${snapshot.peerName || snapshot.peerId || 'someone'}...`}
             </p>
-            <button
-              type="button"
-              onClick={onHangup}
-              className="min-h-12 rounded-xl bg-soft-red px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
-            >
-              Cancel
-            </button>
+            {snapshot.connectDiagnostic && (
+              <p className="max-w-md text-[13px] leading-relaxed text-warm-charcoal">
+                {snapshot.connectDiagnostic}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={onHangup}
+                className="min-h-12 rounded-xl bg-soft-red px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
+              >
+                Cancel
+              </button>
+              {snapshot.retryAvailable && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="min-h-12 rounded-xl border border-heart-pink bg-white px-6 py-3 text-base font-bold text-heart-pink transition hover:bg-soft-blush"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
           </div>
         )}
 

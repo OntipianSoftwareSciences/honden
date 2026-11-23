@@ -345,7 +345,7 @@ test('video call falls back to voice when there is no camera', async () => {
   const requested: MediaStreamConstraints[] = []
   getUserMediaImpl = async (next) => {
     requested.push(next)
-    if (next.audio && next.video) {
+    if (next.video) {
       throw new DOMException('Requested device not found', 'NotFoundError')
     }
     return new FakeMediaStream([fakeTrack('audio')])
@@ -354,44 +354,40 @@ test('video call falls back to voice when there is no camera', async () => {
   await placeCall('video')
 
   assert.equal(requested.length, 2)
-  assert.deepEqual(requested[1], { audio: true, video: false })
+  assert.deepEqual(requested[0], { audio: true, video: false })
+  assert.equal(requested[1].audio, false)
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
   assert.equal(snapshot.notice, 'No camera found, voice call only')
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'voice')
-  assert.ok(warnings.includes('[call] device unavailable: NotFoundError'))
+  assert.ok(warnings.includes('[call] camera unavailable: NotFoundError'))
   assertNoMessageLogged('Requested device not found')
 })
 
-test('video call works without a microphone and explains why', async () => {
+test('missing microphone fails with a plain message, not a generic connect error', async () => {
   const requested: MediaStreamConstraints[] = []
   getUserMediaImpl = async (next) => {
     requested.push(next)
-    if (next.audio) {
-      throw new DOMException('Requested device not found', 'NotFoundError')
-    }
-    return new FakeMediaStream([fakeTrack('video')])
+    throw new DOMException('Requested device not found', 'NotFoundError')
   }
 
-  await placeCall('video')
+  await manager.startOutgoing('skypuppy', 'video')
 
-  assert.equal(requested.length, 3)
-  assert.equal(requested[1].audio, true)
-  assert.equal(requested[1].video, false)
-  assert.equal(requested[2].audio, false)
+  assert.equal(requested.length, 1)
+  assert.deepEqual(requested[0], { audio: true, video: false })
   const snapshot = manager.snapshot()
-  assert.equal(snapshot.state, 'connected')
-  assert.equal(snapshot.kind, 'video')
+  assert.equal(snapshot.state, 'ended')
   assert.equal(
-    snapshot.notice,
-    'No microphone found, check Pop!_OS Settings > Privacy',
+    snapshot.error,
+    'No microphone found on this device, voice call cannot start, use a USB headset or your phone',
   )
-  assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'video')
+  assert.equal(sent.find((event) => event.type === 'call:invite'), undefined)
+  assert.ok(warnings.includes('[call] getUserMedia failed: NotFoundError'))
   assertNoMessageLogged('Requested device not found')
 })
 
-test('no microphone or camera fails with a plain message', async () => {
+test('no microphone or camera fails with the same plain message', async () => {
   getUserMediaImpl = async () => {
     throw new DOMException('No input device found', 'NotFoundError')
   }
@@ -400,9 +396,9 @@ test('no microphone or camera fails with a plain message', async () => {
 
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'ended')
-  assert.match(
+  assert.equal(
     snapshot.error,
-    /No microphone found, check Pop!_OS Settings > Privacy/,
+    'No microphone found on this device, voice call cannot start, use a USB headset or your phone',
   )
   assert.ok(warnings.includes('[call] getUserMedia failed: NotFoundError'))
   assertNoMessageLogged('No input device found')

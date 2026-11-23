@@ -1524,6 +1524,7 @@ export default function App() {
         onAccept={() => void callManager.accept()}
         onReject={() => callManager.reject()}
         onHangup={() => callManager.hangup()}
+        onRetry={() => void callManager.retry()}
         onToggleMic={() => callManager.toggleMic()}
         onToggleCamera={() => callManager.toggleCamera()}
         onSwitchCamera={() => void callManager.switchCamera()}
