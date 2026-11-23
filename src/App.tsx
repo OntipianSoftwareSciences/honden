@@ -1123,6 +1123,7 @@ export default function App() {
         className="chat-layout h-[100dvh] w-full bg-warm-cream text-warm-charcoal"
         data-columns={layout.columns}
         data-details={detailsOpen ? 'open' : 'closed'}
+        data-mobile-view="chat"
       >
         <aside className="chat-layout__list border-r border-border bg-white" aria-label="Your conversations">
           <EmptyChat
@@ -1147,36 +1148,49 @@ export default function App() {
               ←
             </button>
             <div className="min-w-0 flex-1">
-              <p className="readable-text break-words font-semibold text-warm-charcoal">
-                {thread?.name ?? 'Someone'}
-              </p>
               {isGlobal ? (
-                <p className="text-[13px] text-soft-grey">A shared channel for everyone in HonDen.</p>
+                <>
+                  <p className="readable-text break-words font-semibold text-warm-charcoal">
+                    {thread?.name ?? 'Someone'}
+                  </p>
+                  <p className="text-[13px] text-soft-grey">
+                    A shared channel for everyone in HonDen.
+                  </p>
+                </>
               ) : (
                 <>
-                  <p className="text-[13px] text-soft-grey">@{thread?.username ?? 'someone'}</p>
-                  <p className="flex items-center gap-1 text-[12px] text-soft-grey">
-                    <Lock size={10} className="text-heart-pink" aria-hidden="true" />
-                    Only you and @{thread?.username ?? 'someone'} can read this.
+                  <p className="readable-text truncate font-semibold text-warm-charcoal">
+                    {thread?.name ?? 'Someone'}{' '}
+                    <span className="font-normal text-soft-grey">
+                      @{thread?.username ?? 'someone'}
+                    </span>
+                  </p>
+                  <p className="flex min-w-0 items-center gap-1 text-[12px] text-soft-grey">
+                    <Lock size={10} className="shrink-0 text-heart-pink" aria-hidden="true" />
+                    <span className="truncate">
+                      Only you and @{thread?.username ?? 'someone'} can read this.
+                    </span>
                   </p>
                 </>
               )}
             </div>
             <ConnectionPill status={connection} />
-            <UserChip
-              user={user}
-              onProfile={() => setModal('profile')}
-              onSecurity={() => setModal('security')}
-            />
+            <div className="hidden md:block">
+              <UserChip
+                user={user}
+                onProfile={() => setModal('profile')}
+                onSecurity={() => setModal('security')}
+              />
+            </div>
             {!isGlobal && (
               <button
                 type="button"
                 onClick={() => startCall('video')}
                 aria-label={`Call @${thread?.username ?? 'someone'}`}
-                className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
+                className="flex min-h-12 shrink-0 items-center gap-2 rounded-xl border border-heart-pink bg-white px-3 py-2 text-sm font-bold text-heart-pink transition hover:bg-soft-blush md:min-h-11"
               >
                 <Phone size={16} className="text-heart-pink" />
-                Call
+                <span className="hidden sm:inline">Call</span>
               </button>
             )}
             {layout.columns === 2 && (

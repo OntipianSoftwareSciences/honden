@@ -317,32 +317,52 @@
   }
 }
 
-@media (max-width: 719px) {
+@media (max-width: 767px) {
   .chat-layout[data-columns='2'],
   .chat-layout[data-columns='3'] {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* Phone: show either the conversation list OR the chat, never both. */
   .chat-layout[data-columns='2'] .chat-layout__list,
   .chat-layout[data-columns='3'] .chat-layout__list {
+    display: block;
+  }
+
+  .chat-layout[data-columns='2'] .chat-layout__chat,
+  .chat-layout[data-columns='3'] .chat-layout__chat {
     display: none;
+  }
+
+  .chat-layout[data-mobile-view='chat'] .chat-layout__list {
+    display: none !important;
+  }
+
+  .chat-layout[data-mobile-view='chat'] .chat-layout__chat {
+    display: flex !important;
+  }
+
+  .chat-layout__details {
+    display: none !important;
   }
 }
 
-.chat-layout[data-columns='2'] .chat-layout__list,
-.chat-layout[data-columns='3'] .chat-layout__list,
-.chat-layout[data-columns='3'] .chat-layout__details {
-  display: block;
-}
+@media (min-width: 768px) {
+  .chat-layout[data-columns='2'] .chat-layout__list,
+  .chat-layout[data-columns='3'] .chat-layout__list,
+  .chat-layout[data-columns='3'] .chat-layout__details {
+    display: block;
+  }
 
-.chat-layout[data-columns='2'][data-details='open'] .chat-layout__details {
-  display: block;
-  position: absolute;
-  inset-block: 0;
-  right: 0;
-  z-index: 30;
-  width: min(320px, 85vw);
-  box-shadow: -8px 0 24px rgba(43, 35, 48, 0.16);
+  .chat-layout[data-columns='2'][data-details='open'] .chat-layout__details {
+    display: block;
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 30;
+    width: min(320px, 85vw);
+    box-shadow: -8px 0 24px rgba(43, 35, 48, 0.16);
+  }
 }
 
 .chat-layout p,
