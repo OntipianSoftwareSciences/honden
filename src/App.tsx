@@ -580,7 +580,8 @@ export default function App() {
   useEffect(() => {
     const goOnline = () => {
       clearOffline()
-      setConnection('connecting')
+      // The socket owns the pill status; forcing 'connecting' here can leave it
+      // stuck when the handshake is already failing or has just recovered.
       void flushOutbox()
     }
     const goOffline = () => {

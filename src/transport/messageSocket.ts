@@ -331,20 +331,33 @@ export function startMessageSocket(
     connect()
   }
 
-  const onOnline = () => {
+  function resume(): void {
     if (stopped) return
-    clearReconnect()
-    attempt = 0
-    reportedUnreachable = false
-    if (!socket || socket.readyState >= WebSocket.CLOSING) connect()
+    // A live socket is already working. Anything else -- including a handshake
+    // left stuck in CONNECTING while Android suspends the WebView -- needs a
+    // fresh connection instead of waiting for a paused timer to fire.
+    if (authReady && socket?.readyState === WebSocket.OPEN) return
+    restart()
+  }
+
+  const onOnline = () => {
+    resume()
   }
 
   const onOffline = () => {
     if (!stopped) setStatus('disconnected')
   }
 
+  const onVisible = () => {
+    if (stopped || document.hidden) return
+    resume()
+  }
+
   window.addEventListener('online', onOnline)
   window.addEventListener('offline', onOffline)
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', onVisible)
+  }
   connect()
 
   return {
@@ -352,6 +365,9 @@ export function startMessageSocket(
       stopped = true
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', onVisible)
+      }
       clearReconnect()
       clearHeartbeat()
       clearConnectTimer()

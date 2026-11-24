@@ -121,9 +121,34 @@ class FakeWebSocket {
 const createdSockets: FakeWebSocket[] = []
 const originalInfo = console.info
 const originalWarn = console.warn
+type TestListener = () => void
+
+let windowListeners = new Map<string, TestListener[]>()
+let documentListeners = new Map<string, TestListener[]>()
+let documentHidden = false
+
+function addListener(store: Map<string, TestListener[]>, type: string, listener: TestListener) {
+  const listeners = store.get(type) ?? []
+  listeners.push(listener)
+  store.set(type, listeners)
+}
+
+function removeListener(store: Map<string, TestListener[]>, type: string, listener: TestListener) {
+  store.set(
+    type,
+    (store.get(type) ?? []).filter((item) => item !== listener),
+  )
+}
+
+function fire(store: Map<string, TestListener[]>, type: string) {
+  for (const listener of store.get(type) ?? []) listener()
+}
 
 function installBrowserEnv(hostname = 'honden.onrender.com', origin = 'https://honden.onrender.com') {
   createdSockets.length = 0
+  windowListeners = new Map()
+  documentListeners = new Map()
+  documentHidden = false
   const values = new Map<string, string>()
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
@@ -137,8 +162,25 @@ function installBrowserEnv(hostname = 'honden.onrender.com', origin = 'https://h
     configurable: true,
     value: {
       location: { hostname, origin },
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
+      addEventListener: (type: string, listener: TestListener) =>
+        addListener(windowListeners, type, listener),
+      removeEventListener: (type: string, listener: TestListener) =>
+        removeListener(windowListeners, type, listener),
+    },
+  })
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      addEventListener: (type: string, listener: TestListener) =>
+        addListener(documentListeners, type, listener),
+      removeEventListener: (type: string, listener: TestListener) =>
+        removeListener(documentListeners, type, listener),
+      get hidden() {
+        return documentHidden
+      },
+      get visibilityState() {
+        return documentHidden ? 'hidden' : 'visible'
+      },
     },
   })
   Object.defineProperty(globalThis, 'WebSocket', {
@@ -152,9 +194,18 @@ function installBrowserEnv(hostname = 'honden.onrender.com', origin = 'https://h
 function restoreBrowserEnv() {
   console.info = originalInfo
   console.warn = originalWarn
-  for (const key of ['localStorage', 'window', 'WebSocket']) {
+  for (const key of ['localStorage', 'window', 'document', 'WebSocket']) {
     Reflect.deleteProperty(globalThis, key)
   }
+}
+
+function fireOnline() {
+  fire(windowListeners, 'online')
+}
+
+function fireVisibilityChange(hidden = false) {
+  documentHidden = hidden
+  fire(documentListeners, 'visibilitychange')
 }
 
 function delay(ms: number): Promise<void> {
@@ -235,6 +286,59 @@ test('pill retries and goes Connected after the server wakes', async () => {
   await delay(20)
   assert.equal(statuses.at(-1), 'live')
   assert.ok(probes >= 2)
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('visibilitychange resume retries a stuck socket and reaches Connected', async () => {
+  installBrowserEnv('tauri.localhost', 'http://tauri.localhost')
+  const statuses: string[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status) => statuses.push(status),
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 1000 },
+  )
+  assert.equal(statuses[0], 'connecting')
+  assert.equal(createdSockets.length, 1)
+  // The APK was backgrounded with the handshake still in CONNECTING.
+  fireVisibilityChange()
+  assert.equal(createdSockets.length, 2, 'resume should open a fresh socket')
+  const resumed = createdSockets[1]
+  assert.ok(resumed)
+  resumed.open()
+  resumed.sendReady()
+  await delay(20)
+  assert.equal(statuses.at(-1), 'live')
+  assert.equal(connectionLabels.live, 'Connected 🍯')
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('online event retries a stuck socket and reports Connected', async () => {
+  installBrowserEnv('tauri.localhost', 'http://tauri.localhost')
+  const statuses: string[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status) => statuses.push(status),
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 1000 },
+  )
+  assert.equal(createdSockets.length, 1)
+  fireOnline()
+  assert.equal(createdSockets.length, 2, 'online should retry a stuck socket')
+  const retried = createdSockets[1]
+  assert.ok(retried)
+  retried.open()
+  retried.sendReady()
+  await delay(20)
+  assert.equal(statuses.at(-1), 'live')
   controller.close()
   restoreBrowserEnv()
 })
