@@ -1164,6 +1164,13 @@ class CallManager {
     if (event.callId !== this.callId || !event.sdp) {
       return
     }
+    // A username can have several live sockets. The server fans call signals
+    // out to all of them, so a stale session that never answered is still in
+    // `incoming`. It must not answer this offer: the duplicate answer makes the
+    // caller's second setRemoteDescription fail and hang up the real call.
+    if (this.state === 'idle' || this.state === 'incoming' || this.state === 'ended') {
+      return
+    }
     if (event.from) this.peerId = event.from
     signalLog('Call offer received', this.callId)
 

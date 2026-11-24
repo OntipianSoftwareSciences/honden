@@ -779,3 +779,97 @@ test('retry while connected rebuilds the peer without ping-pong retries', async 
   assert.equal(manager.snapshot().state, 'connecting')
   assert.equal(manager.snapshot().notice, 'Reconnecting...')
 })
+
+test('@sukar3tto video call stays Connected 30s after Answer despite a stale session', async () => {
+  getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio'), fakeTrack('video')])
+
+  // Capture window timers so the 30s assertion is instant but real callbacks
+  // (connect timeout, ICE trouble, hangup reset) still run when due.
+  const scheduled = new Map<number, { callback: () => void; delay: number }>()
+  let nextTimer = 1
+  const w = globalThis.window as unknown as {
+    setTimeout: (callback: () => void, delay?: number) => number
+    clearTimeout: (id: number) => void
+  }
+  const originalSetTimeout = w.setTimeout
+  const originalClearTimeout = w.clearTimeout
+  w.setTimeout = (callback, delay = 0) => {
+    const id = nextTimer
+    nextTimer += 1
+    scheduled.set(id, { callback, delay })
+    return id
+  }
+  w.clearTimeout = (id) => {
+    scheduled.delete(id)
+  }
+
+  try {
+    manager.handleInvite({
+      type: 'call:invite',
+      from: 'sukar3ttodev',
+      callId: 'call-sukar3tto-instant-drop',
+      kind: 'video',
+      peerName: '@sukar3ttodev',
+    })
+    assert.equal(manager.snapshot().state, 'incoming')
+
+    // The server fans signals to every @sukar3tto socket. An old session that
+    // never answered must ignore this offer instead of sending a second answer.
+    await manager.handleOffer({
+      type: 'call:offer',
+      from: 'sukar3ttodev',
+      callId: 'call-sukar3tto-instant-drop',
+      sdp: { type: 'offer', sdp: 'v=0 offer' },
+    })
+    assert.equal(
+      sent.filter((event) => event.type === 'call:answer').length,
+      0,
+      'stale incoming session answered the offer',
+    )
+    assert.equal(manager.snapshot().state, 'incoming')
+
+    sent.length = 0
+    await manager.accept()
+    assert.equal(sent.find((event) => event.type === 'call:accept')?.kind, 'video')
+
+    await manager.handleOffer({
+      type: 'call:offer',
+      from: 'sukar3ttodev',
+      callId: 'call-sukar3tto-instant-drop',
+      sdp: { type: 'offer', sdp: 'v=0 offer' },
+    })
+    assert.equal(sent.filter((event) => event.type === 'call:answer').length, 1)
+
+    const pc = FakeRTCPeerConnection.instances.at(-1)
+    assert.ok(pc, 'answerer peer connection was not created')
+    pc.ontrack?.({ track: fakeTrack('audio') })
+    pc.ontrack?.({ track: fakeTrack('video') })
+    pc.connectionState = 'connected'
+    pc.onconnectionstatechange?.()
+
+    let snapshot = manager.snapshot()
+    assert.equal(snapshot.state, 'connected')
+    assert.equal(snapshot.localStream?.getAudioTracks().length, 1)
+    assert.equal(snapshot.localStream?.getVideoTracks().length, 1)
+    assert.equal(snapshot.remoteStream?.getAudioTracks().length, 1)
+    assert.equal(snapshot.remoteStream?.getVideoTracks().length, 1)
+
+    for (const [id, timer] of [...scheduled]) {
+      if (timer.delay <= 30_000) {
+        scheduled.delete(id)
+        timer.callback()
+      }
+    }
+
+    snapshot = manager.snapshot()
+    assert.equal(snapshot.state, 'connected')
+    assert.equal(sent.filter((event) => event.type === 'call:hangup').length, 0)
+    assert.equal(snapshot.localStream?.getAudioTracks().length, 1)
+    assert.equal(snapshot.localStream?.getVideoTracks().length, 1)
+    assert.equal(snapshot.remoteStream?.getAudioTracks().length, 1)
+    assert.equal(snapshot.remoteStream?.getVideoTracks().length, 1)
+  } finally {
+    w.setTimeout = originalSetTimeout
+    w.clearTimeout = originalClearTimeout
+  }
+})
