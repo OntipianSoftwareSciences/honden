@@ -415,6 +415,37 @@ function loadDevices(): DeviceSession[] {
   ]
 }
 
+function UserAvatarButton({
+  user,
+  onProfile,
+  className = '',
+}: {
+  user: AccountUser
+  onProfile: () => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onProfile}
+      aria-label="Edit profile"
+      className={`relative flex shrink-0 items-center justify-center rounded-xl border border-border text-xs font-bold text-warm-charcoal ${className}`}
+      style={{ backgroundColor: user.avatarColor }}
+    >
+      {user.displayName.slice(0, 2).toUpperCase()}
+      <span
+        className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-white ${
+          user.status === 'online'
+            ? 'bg-leaf-green'
+            : user.status === 'dnd'
+              ? 'bg-warm-amber'
+              : 'bg-soft-grey'
+        }`}
+      />
+    </button>
+  )
+}
+
 function UserChip({
   user,
   onProfile,
@@ -426,24 +457,7 @@ function UserChip({
 }) {
   return (
     <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={onProfile}
-        aria-label="Edit profile"
-        className="relative h-9 w-9 rounded-xl border border-border text-xs font-bold text-warm-charcoal"
-        style={{ backgroundColor: user.avatarColor }}
-      >
-        {user.displayName.slice(0, 2).toUpperCase()}
-        <span
-          className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-white ${
-            user.status === 'online'
-              ? 'bg-leaf-green'
-              : user.status === 'dnd'
-                ? 'bg-warm-amber'
-                : 'bg-soft-grey'
-          }`}
-        />
-      </button>
+      <UserAvatarButton user={user} onProfile={onProfile} className="h-9 w-9" />
       <button
         type="button"
         onClick={onSecurity}
@@ -1301,13 +1315,19 @@ export default function App() {
               )}
             </div>
             <ConnectionPill status={connection} onRetry={retryConnection} />
-            <div className="hidden md:block">
+            {layout.width < 768 ? (
+              <UserAvatarButton
+                user={user}
+                onProfile={() => setModal('profile')}
+                className="h-11 w-11"
+              />
+            ) : (
               <UserChip
                 user={user}
                 onProfile={() => setModal('profile')}
                 onSecurity={() => setModal('security')}
               />
-            </div>
+            )}
             {!isGlobal && (
               <div className="flex shrink-0 items-center gap-2">
                 <button
@@ -1628,6 +1648,15 @@ export default function App() {
             onOpenThread={openThread}
             onNewThread={newThread}
             onAddUser={() => setScreen('addUser')}
+            headerUserButton={
+              layout.width < 768 ? (
+                <UserAvatarButton
+                  user={user}
+                  onProfile={() => setModal('profile')}
+                  className="h-11 w-11"
+                />
+              ) : null
+            }
           />
         </div>
       </div>

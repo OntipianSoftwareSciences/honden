@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import ConnectionPill from '../components/ConnectionPill'
 import CuteLoader from '../components/CuteLoader'
 import type { ChatMessage, ConnectionStatus } from '../types'
@@ -15,6 +15,7 @@ type Props = {
   onNewThread: (name: string) => void
   onAddUser: () => void
   compact?: boolean
+  headerUserButton?: ReactNode
 }
 
 export default function EmptyChat({
@@ -28,6 +29,7 @@ export default function EmptyChat({
   onNewThread,
   onAddUser,
   compact = false,
+  headerUserButton,
 }: Props) {
   const [newMessage, setNewMessage] = useState(false)
   const [name, setName] = useState('')
@@ -43,17 +45,18 @@ export default function EmptyChat({
   return (
     <main className={`screen-fade h-full w-full bg-warm-cream ${compact ? '' : 'min-h-screen'}`}>
       <div className={`flex h-full w-full flex-col border-0 bg-white ${compact ? '' : 'min-h-screen'}`}>
-        <header className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border ${compact ? 'px-4 py-3' : 'px-4 py-3 sm:px-6 sm:py-4'}`}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg" aria-hidden="true">
+        <header className={`flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2 border-b border-border sm:gap-x-3 ${compact ? 'px-4 py-3' : 'px-4 py-3 sm:px-6 sm:py-4'}`}>
+          <span className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg sm:flex" aria-hidden="true">
             🍯
           </span>
           <h2 className="readable-text whitespace-nowrap font-bold text-warm-charcoal">HonDen</h2>
           <ConnectionPill status={connection} onRetry={onRetry} />
+          {headerUserButton}
           {!compact && (
             <button
               type="button"
               onClick={onOpenSettings}
-              className="ml-auto shrink-0 rounded-xl border border-border px-4 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              className="ml-auto shrink-0 rounded-xl border border-border px-3 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink sm:px-4"
             >
               Settings
             </button>
