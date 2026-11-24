@@ -68,6 +68,9 @@ export default function CallScreens({
     previousState.current = snapshot.state
   }, [snapshot.state])
 
+  const localHasVideo = Boolean(snapshot.localStream?.getVideoTracks().length)
+  const remoteHasVideo = Boolean(snapshot.remoteStream?.getVideoTracks().length)
+
   if (snapshot.state === 'idle') return null
 
   if (snapshot.state === 'incoming') {
@@ -115,7 +118,19 @@ export default function CallScreens({
           playsInline
           className="absolute inset-0 h-full w-full bg-soft-blush object-cover"
         />
-        {snapshot.localStream && (
+        {!remoteHasVideo && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-soft-blush">
+            <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white text-4xl font-bold text-heart-pink shadow-soft">
+              :3
+            </div>
+            <p className="text-[13px] font-semibold text-warm-charcoal">
+              {snapshot.kind === 'video'
+                ? 'Voice only — camera unavailable'
+                : 'Voice call'}
+            </p>
+          </div>
+        )}
+        {localHasVideo && (
           <video
             ref={localVideoRef}
             autoPlay
@@ -221,8 +236,14 @@ export default function CallScreens({
             onClick={onToggleCamera}
             className="flex min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-xl border border-soft-red px-2 py-2 text-soft-red transition hover:bg-soft-blush md:min-h-14 md:px-4"
           >
-            {snapshot.cameraOff ? <VideoOff size={20} /> : <Video size={20} />}
-            <span className="text-[13px] font-semibold leading-tight">Camera off</span>
+            {localHasVideo && snapshot.cameraOff ? (
+              <VideoOff size={20} />
+            ) : (
+              <Video size={20} />
+            )}
+            <span className="text-[13px] font-semibold leading-tight">
+              {localHasVideo && !snapshot.cameraOff ? 'Camera off' : 'Camera on'}
+            </span>
           </button>
           <button
             type="button"

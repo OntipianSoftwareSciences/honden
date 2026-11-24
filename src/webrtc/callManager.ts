@@ -45,8 +45,8 @@ type SignalingSender = (event: SignalEvent) => void
 
 const micMissingMessage =
   'No microphone found on this device, voice call cannot start, use a USB headset or your phone'
-const noCameraMessage = 'No camera found, use Voice call instead'
-const videoUnavailableMessage = 'Video unavailable on the other device, using voice only'
+const noCameraMessage = 'No camera found, continuing as voice only'
+const videoUnavailableMessage = 'Video unavailable on the other device, continuing as voice only'
 
 type CallStage =
   | 'getUserMedia'
@@ -795,32 +795,24 @@ class CallManager {
     }
   }
 
-  private async getVideoMedia(): Promise<MediaStream> {
+  private async requestVideoMedia(audio: boolean): Promise<MediaStream> {
+    const request = (video: MediaTrackConstraints) =>
+      navigator.mediaDevices.getUserMedia({ audio, video })
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: VIDEO_CONSTRAINTS_720P,
-      })
+      const stream = await request(VIDEO_CONSTRAINTS_720P)
       const track = stream.getVideoTracks()[0]
       if (track && !is720pTrack(track)) {
         // The camera accepted the call but cannot actually deliver 720p.
         // Stop it cleanly and retry with the explicit 480p constraints.
         for (const item of stream.getTracks()) item.stop()
-        return await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: VIDEO_CONSTRAINTS_FALLBACK,
-        })
+        return await request(VIDEO_CONSTRAINTS_FALLBACK)
       }
       return stream
     } catch (error) {
-      const name = errorDetails(error).name
-      // Overconstrained is the one failure a lower resolution can fix.
-      // NotFound / permission / device errors must keep their existing behavior.
-      if (name !== 'OverconstrainedError') throw error
-      return await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: VIDEO_CONSTRAINTS_FALLBACK,
-      })
+      // Overconstrained is the one failure a lower resolution can fix. Every
+      // other video failure is handled by the caller's audio-only fallback.
+      if (errorDetails(error).name !== 'OverconstrainedError') throw error
+      return await request(VIDEO_CONSTRAINTS_FALLBACK)
     }
   }
 
@@ -847,9 +839,10 @@ class CallManager {
     let media: MediaStream | null = null
     let cameraMissing = false
     try {
-      media = await this.getVideoMedia()
+      media = await this.requestVideoMedia(true)
     } catch (error) {
-      if (errorDetails(error).name !== 'NotFoundError') throw error
+      // NotFound, Overconstrained, NotAllowed, NotReadable and every other
+      // video-only failure must fall back to audio instead of ending the call.
       logErrorName('camera unavailable', error)
       cameraMissing = true
     }
@@ -863,6 +856,7 @@ class CallManager {
       this.local = audio
       this.cameraFound = false
       this.kind = 'voice'
+      this.lastKind = 'voice'
       this.notice = noCameraMessage
       await this.refreshCameras()
       return this.local
@@ -878,6 +872,7 @@ class CallManager {
     if (media.getVideoTracks().length === 0) {
       this.cameraFound = false
       this.kind = 'voice'
+      this.lastKind = 'voice'
       this.notice = noCameraMessage
     } else {
       this.cameraFound = true
@@ -1372,6 +1367,74 @@ class CallManager {
     }
   }
 
+  // A camera can appear after a call started as voice-only (USB webcam,
+  // permission granted late). Add it to the live call without re-calling.
+  async enableCamera() {
+    if (
+      this.state !== 'connected' ||
+      !this.local ||
+      this.local.getAudioTracks().length === 0
+    ) {
+      return
+    }
+
+    const existing = this.local.getVideoTracks()[0]
+    if (existing) {
+      existing.enabled = true
+      this.cameraOff = false
+      this.notice = ''
+      this.emit()
+      return
+    }
+
+    let stream: MediaStream
+    try {
+      stream = await this.requestVideoMedia(false)
+    } catch (error) {
+      logErrorName('camera unavailable', error)
+      this.notice = noCameraMessage
+      this.emit()
+      return
+    }
+
+    const track = stream.getVideoTracks()[0]
+    if (!track) {
+      this.notice = noCameraMessage
+      this.emit()
+      return
+    }
+
+    track.enabled = true
+    this.local.addTrack(track)
+    this.cameraFound = true
+    this.kind = 'video'
+    this.lastKind = 'video'
+    this.cameraOff = false
+    this.notice = ''
+    this.error = ''
+
+    const pc = this.pc
+    if (pc && pc.signalingState === 'stable') {
+      try {
+        const sender = pc.addTrack(track, this.local)
+        await this.applyVideoBitrate(sender, track)
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        this.emitSignal({
+          type: 'call:offer',
+          to: this.peerId,
+          callId: this.callId,
+          sdp: pc.localDescription ?? offer,
+        })
+      } catch (error) {
+        logErrorName('camera enable failed', error)
+      }
+    }
+
+    await this.refreshCameras()
+    this.emit()
+  }
+
   toggleMic() {
     this.muted = !this.muted
     for (const track of this.local?.getAudioTracks() ?? []) {
@@ -1380,11 +1443,15 @@ class CallManager {
     this.emit()
   }
 
-  toggleCamera() {
-    this.cameraOff = !this.cameraOff
-    for (const track of this.local?.getVideoTracks() ?? []) {
-      track.enabled = !this.cameraOff
+  async toggleCamera() {
+    if (!this.local || this.state === 'idle') return
+    const track = this.local.getVideoTracks()[0]
+    if (!track) {
+      await this.enableCamera()
+      return
     }
+    this.cameraOff = !this.cameraOff
+    track.enabled = !this.cameraOff
     this.emit()
   }
 
