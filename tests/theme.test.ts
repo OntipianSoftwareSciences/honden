@@ -122,7 +122,7 @@ test('support section does not break Settings and Queen Bee is selectable', () =
   assert.match(markup, /more themes, stickers, and sounds/)
   assert.match(
     markup,
-    /href="https:\/\/ko-fi\.com\/REPLACE_WITH_YOUR_KOFI_PAGE"/,
+    /href="https:\/\/ko-fi\.com\/L7O32B7IIH"/,
   )
   assert.match(markup, /Privacy/)
   assert.match(markup, /Messages are encrypted end-to-end/)

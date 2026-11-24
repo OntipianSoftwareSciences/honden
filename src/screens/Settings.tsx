@@ -23,9 +23,8 @@ type Props = {
 
 const noteText = 'text-[0.8125rem] text-soft-grey'
 
-// Replace this placeholder with the real Ko-fi page when it is ready.
-// No confirmed Ko-fi URL exists in the repo yet.
-const SUPPORT_URL = 'https://ko-fi.com/REPLACE_WITH_YOUR_KOFI_PAGE'
+// Scarlet's Ko-fi page for HonDen support.
+const SUPPORT_URL = 'https://ko-fi.com/L7O32B7IIH'
 
 const themeOptions: ReadonlyArray<{ value: ThemeName; label: string }> = [
   { value: 'light', label: 'Light' },
