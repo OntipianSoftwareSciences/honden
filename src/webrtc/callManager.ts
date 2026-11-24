@@ -28,6 +28,19 @@ export type CallSnapshot = {
 
 type CallEndReason = 'hung up' | 'ICE disconnected' | 'WebSocket closed' | 'timeout'
 
+// Prefer 720p for video calls, but keep an explicit 480p path for cameras or
+// browsers that cannot hold it. Bitrates stay in the 1.5-2.5 Mbps range.
+export const VIDEO_CONSTRAINTS_720P: MediaTrackConstraints = {
+  width: { ideal: 1280 },
+  height: { ideal: 720 },
+}
+export const VIDEO_CONSTRAINTS_FALLBACK: MediaTrackConstraints = {
+  width: { ideal: 640 },
+  height: { ideal: 480 },
+}
+export const VIDEO_MAX_BITRATE_720P = 2_000_000
+export const VIDEO_MAX_BITRATE_FALLBACK = 1_500_000
+
 type SignalingSender = (event: SignalEvent) => void
 
 const micMissingMessage =
@@ -336,6 +349,16 @@ function idleSnapshot(): CallSnapshot {
     connectDiagnostic: '',
     retryAvailable: false,
   }
+}
+
+function is720pTrack(track: MediaStreamTrack): boolean {
+  const settings = track.getSettings?.()
+  return (
+    typeof settings?.width === 'number' &&
+    typeof settings?.height === 'number' &&
+    settings.width >= 1280 &&
+    settings.height >= 720
+  )
 }
 
 class CallManager {
@@ -772,6 +795,35 @@ class CallManager {
     }
   }
 
+  private async getVideoMedia(): Promise<MediaStream> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: VIDEO_CONSTRAINTS_720P,
+      })
+      const track = stream.getVideoTracks()[0]
+      if (track && !is720pTrack(track)) {
+        // The camera accepted the call but cannot actually deliver 720p.
+        // Stop it cleanly and retry with the explicit 480p constraints.
+        for (const item of stream.getTracks()) item.stop()
+        return await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: VIDEO_CONSTRAINTS_FALLBACK,
+        })
+      }
+      return stream
+    } catch (error) {
+      const name = errorDetails(error).name
+      // Overconstrained is the one failure a lower resolution can fix.
+      // NotFound / permission / device errors must keep their existing behavior.
+      if (name !== 'OverconstrainedError') throw error
+      return await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: VIDEO_CONSTRAINTS_FALLBACK,
+      })
+    }
+  }
+
   private async ensureLocalStream() {
     if (this.local) return this.local
 
@@ -795,7 +847,7 @@ class CallManager {
     let media: MediaStream | null = null
     let cameraMissing = false
     try {
-      media = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      media = await this.getVideoMedia()
     } catch (error) {
       if (errorDetails(error).name !== 'NotFoundError') throw error
       logErrorName('camera unavailable', error)
@@ -835,10 +887,36 @@ class CallManager {
     return this.local
   }
 
-  private attachLocalTracks(pc: RTCPeerConnection, stream: MediaStream) {
+  private async applyVideoBitrate(sender: RTCRtpSender, track: MediaStreamTrack) {
+    if (
+      typeof sender.setParameters !== 'function' ||
+      typeof sender.getParameters !== 'function'
+    ) {
+      return
+    }
+    const maxBitrate = is720pTrack(track)
+      ? VIDEO_MAX_BITRATE_720P
+      : VIDEO_MAX_BITRATE_FALLBACK
+    try {
+      const parameters = sender.getParameters()
+      const encodings = parameters.encodings?.length
+        ? parameters.encodings
+        : [{} as RTCRtpEncodingParameters]
+      await sender.setParameters({
+        ...parameters,
+        encodings: encodings.map((encoding) => ({ ...encoding, maxBitrate })),
+      })
+    } catch {
+      // A browser may refuse encoding changes; WebRTC still negotiates a
+      // workable bitrate, so never fail the call over this hint.
+    }
+  }
+
+  private async attachLocalTracks(pc: RTCPeerConnection, stream: MediaStream) {
     for (const track of stream.getTracks()) {
       if (!pc.getSenders().some((sender) => sender.track === track)) {
-        pc.addTrack(track, stream)
+        const sender = pc.addTrack(track, stream)
+        if (track.kind === 'video') await this.applyVideoBitrate(sender, track)
       }
     }
   }
@@ -876,7 +954,7 @@ class CallManager {
 
     try {
       const pc = await this.ensurePeerConnection(true)
-      this.attachLocalTracks(pc, this.local)
+      await this.attachLocalTracks(pc, this.local)
       if (this.restartInitiator) {
         const offer = await pc.createOffer({ iceRestart: true })
         await pc.setLocalDescription(offer)
@@ -1004,7 +1082,7 @@ class CallManager {
       const stream = await this.ensureLocalStream()
       stage = 'peer connection'
       const pc = await this.ensurePeerConnection()
-      this.attachLocalTracks(pc, stream)
+      await this.attachLocalTracks(pc, stream)
       stage = 'signaling'
       this.emitSignal({
         type: 'call:accept',
@@ -1072,7 +1150,7 @@ class CallManager {
       }
       stage = 'peer connection'
       const pc = await this.ensurePeerConnection()
-      this.attachLocalTracks(pc, stream)
+      await this.attachLocalTracks(pc, stream)
       stage = 'offer'
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
@@ -1248,12 +1326,12 @@ class CallManager {
         const facing = oldTrack.getSettings().facingMode === 'environment' ? 'user' : 'environment'
         try {
           newStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { exact: facing } },
+            video: { ...VIDEO_CONSTRAINTS_720P, facingMode: { exact: facing } },
             audio: false,
           })
         } catch {
           newStream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: facing },
+            video: { ...VIDEO_CONSTRAINTS_720P, facingMode: facing },
             audio: false,
           })
         }
@@ -1265,7 +1343,7 @@ class CallManager {
         const nextIndex = (currentIndex + 1) % cameras.length
         const next = cameras[nextIndex]
         newStream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: next.deviceId } },
+          video: { ...VIDEO_CONSTRAINTS_720P, deviceId: { exact: next.deviceId } },
           audio: false,
         })
         label = next.label || `Camera ${nextIndex + 1}`
@@ -1275,7 +1353,10 @@ class CallManager {
       if (!newTrack) throw new Error('no video track')
 
       const sender = this.pc?.getSenders().find((item) => item.track?.kind === 'video')
-      if (sender) await sender.replaceTrack(newTrack)
+      if (sender) {
+        await sender.replaceTrack(newTrack)
+        await this.applyVideoBitrate(sender, newTrack)
+      }
 
       newTrack.enabled = !this.cameraOff
       this.local.removeTrack(oldTrack)

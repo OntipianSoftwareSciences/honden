@@ -21,14 +21,18 @@ type FakeSignal = {
 }
 
 let trackSeq = 0
-function fakeTrack(kind: 'audio' | 'video'): FakeTrack {
+function fakeTrack(
+  kind: 'audio' | 'video',
+  settings: Record<string, unknown> = {},
+): FakeTrack {
   trackSeq += 1
   return {
     id: `${kind}-${trackSeq}`,
     kind,
     enabled: true,
     stop() {},
-    getSettings: () => ({}),
+    getSettings: () =>
+      kind === 'video' ? { width: 1280, height: 720, ...settings } : settings,
   }
 }
 
@@ -67,6 +71,7 @@ let pcFailures: PcFailures = {}
 class FakeRTCPeerConnection {
   static instances: FakeRTCPeerConnection[] = []
   static configs: RTCConfiguration[] = []
+  static parameters: RTCRtpParameters[] = []
   localDescription: unknown = null
   remoteDescription: unknown = null
   connectionState = 'new'
@@ -75,7 +80,12 @@ class FakeRTCPeerConnection {
   ontrack: ((event: { track: FakeTrack }) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
   oniceconnectionstatechange: (() => void) | null = null
-  private senders: { track: FakeTrack }[] = []
+  private senders: {
+    track: FakeTrack
+    getParameters: () => RTCRtpSendParameters
+    setParameters: (parameters: RTCRtpParameters) => Promise<void>
+    replaceTrack: (track: FakeTrack) => Promise<void>
+  }[] = []
 
   constructor(config?: RTCConfiguration) {
     if (pcFailures.create) throw pcFailures.create
@@ -84,7 +94,21 @@ class FakeRTCPeerConnection {
   }
 
   addTrack(track: FakeTrack) {
-    const sender = { track }
+    const sender = {
+      track,
+      getParameters: () =>
+        ({
+          transactionId: 'test',
+          codecs: [],
+          headerExtensions: [],
+          rtcp: { cname: 'test', ssrc: 0, mux: true, reducedSize: true },
+          encodings: [],
+        }) as RTCRtpSendParameters,
+      setParameters: async (parameters: RTCRtpParameters) => {
+        FakeRTCPeerConnection.parameters.push(parameters)
+      },
+      replaceTrack: async () => {},
+    }
     this.senders.push(sender)
     return sender
   }
@@ -150,8 +174,18 @@ let sent: FakeSignal[] = []
 let warnings: string[] = []
 let originalWarn: typeof console.warn
 
+let video720p: MediaTrackConstraints
+let videoFallback: MediaTrackConstraints
+let bitrate720p: number
+let bitrateFallback: number
+
 before(async () => {
-  ;({ callManager: manager } = await import('../src/webrtc/callManager'))
+  const module = await import('../src/webrtc/callManager')
+  manager = module.callManager
+  video720p = module.VIDEO_CONSTRAINTS_720P
+  videoFallback = module.VIDEO_CONSTRAINTS_FALLBACK
+  bitrate720p = module.VIDEO_MAX_BITRATE_720P
+  bitrateFallback = module.VIDEO_MAX_BITRATE_FALLBACK
 })
 
 beforeEach(() => {
@@ -160,6 +194,7 @@ beforeEach(() => {
   sent = []
   warnings = []
   FakeRTCPeerConnection.configs = []
+  FakeRTCPeerConnection.parameters = []
   getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio')])
   enumerateDevicesImpl = async () => [
     { kind: 'videoinput', deviceId: 'cam-1', label: 'Camera' },
@@ -231,10 +266,93 @@ test('video call connects second', async () => {
 
   await placeCall('video')
 
-  assert.deepEqual(constraints, { audio: true, video: true })
+  assert.deepEqual(constraints, { audio: true, video: video720p })
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'video')
   assert.equal(manager.snapshot().state, 'connected')
   assert.equal(manager.snapshot().error, '')
+})
+
+test('video calls request 720p and set a 2 Mbps sender bitrate', async () => {
+  let constraints: MediaStreamConstraints | undefined
+  getUserMediaImpl = async (next) => {
+    constraints = next
+    return new FakeMediaStream([fakeTrack('audio'), fakeTrack('video')])
+  }
+
+  await placeCall('video')
+
+  assert.deepEqual(video720p, { width: { ideal: 1280 }, height: { ideal: 720 } })
+  assert.equal(bitrate720p, 2_000_000)
+  assert.deepEqual(constraints, { audio: true, video: video720p })
+  const parameters = FakeRTCPeerConnection.parameters.at(-1)
+  assert.equal(parameters?.encodings?.[0]?.maxBitrate, bitrate720p)
+})
+
+test('video calls fall back to 480p when 720p is overconstrained', async () => {
+  const requested: MediaStreamConstraints[] = []
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    if (next.video === video720p) {
+      throw new DOMException('Constraints not satisfied', 'OverconstrainedError')
+    }
+    return new FakeMediaStream([
+      fakeTrack('audio'),
+      fakeTrack('video', { width: 640, height: 480 }),
+    ])
+  }
+
+  await placeCall('video')
+
+  assert.deepEqual(videoFallback, { width: { ideal: 640 }, height: { ideal: 480 } })
+  assert.equal(bitrateFallback, 1_500_000)
+  assert.deepEqual(requested, [
+    { audio: true, video: video720p },
+    { audio: true, video: videoFallback },
+  ])
+  const parameters = FakeRTCPeerConnection.parameters.at(-1)
+  assert.equal(parameters?.encodings?.[0]?.maxBitrate, bitrateFallback)
+})
+
+test('video calls retry with 480p when the camera cannot deliver 720p', async () => {
+  const requested: MediaStreamConstraints[] = []
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    return new FakeMediaStream([
+      fakeTrack('audio'),
+      fakeTrack('video', { width: 640, height: 480 }),
+    ])
+  }
+
+  await placeCall('video')
+
+  assert.equal(requested.length, 2)
+  assert.deepEqual(requested[1], { audio: true, video: videoFallback })
+})
+
+test('switching cameras keeps the 720p preference', async () => {
+  const requested: MediaStreamConstraints[] = []
+  enumerateDevicesImpl = async () => [
+    { kind: 'videoinput', deviceId: 'cam-1', label: 'Camera 1' },
+    { kind: 'videoinput', deviceId: 'cam-2', label: 'Camera 2' },
+  ]
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    const video = next.video
+    const isSwitch =
+      Boolean(video) && typeof video === 'object' && 'deviceId' in video
+    return new FakeMediaStream([
+      fakeTrack('audio'),
+      fakeTrack('video', { deviceId: isSwitch ? 'cam-2' : 'cam-1' }),
+    ])
+  }
+
+  await placeCall('video')
+  await manager.switchCamera()
+
+  assert.deepEqual(requested[1], {
+    audio: false,
+    video: { ...video720p, deviceId: { exact: 'cam-2' } },
+  })
 })
 
 test('TURN is configured and gathered relay candidates mark TURN working', async () => {
@@ -417,7 +535,7 @@ test('video call with no camera keeps the voice path working', async () => {
   await placeCall('video')
 
   assert.deepEqual(requested, [
-    { audio: true, video: true },
+    { audio: true, video: video720p },
     { audio: true, video: false },
   ])
   const snapshot = manager.snapshot()
@@ -450,7 +568,7 @@ test('missing microphone fails with a plain message, not a generic connect error
   await manager.startOutgoing('skypuppy', 'video')
 
   assert.deepEqual(requested, [
-    { audio: true, video: true },
+    { audio: true, video: video720p },
     { audio: true, video: false },
   ])
   const snapshot = manager.snapshot()
@@ -540,7 +658,7 @@ test('answering video without a camera sends a voice accept with the plain notic
   assert.equal(snapshot.cameraCount, 0)
   assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
   assert.deepEqual(requested, [
-    { audio: true, video: true },
+    { audio: true, video: video720p },
     { audio: true, video: false },
   ])
   assert.equal(sent.find((event) => event.type === 'call:accept')?.kind, 'voice')
