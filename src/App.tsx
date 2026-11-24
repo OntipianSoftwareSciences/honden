@@ -698,10 +698,38 @@ export default function App() {
               id: wire.id,
             })
           }
-          if (wire.sender !== ownUsername) playNewMessage()
-          void toChatMessage(wire, identityRef.current).then((chat) => {
-            setMessages((current) => mergeChatMessages(current, [chat]))
-          })
+          // Sound is cosmetic; a WebView audio error must not drop the frame.
+          if (wire.sender !== ownUsername) {
+            try {
+              playNewMessage()
+            } catch {
+              // Ignore audio failures.
+            }
+          }
+          void toChatMessage(wire, identityRef.current)
+            .then((chat) => {
+              setMessages((current) => mergeChatMessages(current, [chat]))
+              // A first message can arrive before /api/chats knows the thread.
+              // Add it now so the conversation is visible without a reload.
+              if (chat.threadId !== globalThreadId) {
+                setThreads((current) =>
+                  current.some((thread) => thread.id === chat.threadId)
+                    ? current
+                    : [
+                        ...current,
+                        {
+                          id: chat.threadId,
+                          name: chat.threadId,
+                          username: chat.threadId,
+                          createdAt: Date.now(),
+                        },
+                      ],
+                )
+              }
+            })
+            .catch((error: unknown) => {
+              console.warn('[message] live message failed', error)
+            })
         }
         if (frame.type === 'delete' && frame.id) {
           setMessages((current) => current.filter((item) => item.id !== frame.id))
