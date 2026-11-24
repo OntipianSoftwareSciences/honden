@@ -67,10 +67,26 @@ export function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+function redactWsUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    if (url.searchParams.has('token')) url.searchParams.set('token', '<redacted>')
+    return url.toString()
+  } catch {
+    return value
+  }
+}
+
 export function authenticatedWs(path = '/ws'): string {
   const url = new URL(sameOriginWs(path))
   const token = getToken()
   if (token) url.searchParams.set('token', token)
+  console.info('[honden:diag] websocket url', {
+    runtime: isTauriRuntime() ? 'tauri' : 'web',
+    origin: remoteOrigin(),
+    url: redactWsUrl(url.toString()),
+    hasToken: Boolean(token),
+  })
   return url.toString()
 }
 
@@ -86,14 +102,20 @@ function getSignalId() {
 }
 
 export const RELEASE_ORIGIN = 'https://honden.onrender.com'
+export const RELEASE_WS_URL = 'wss://honden.onrender.com/ws'
 
 export function isTauriRuntime(): boolean {
   if (typeof window === 'undefined') return false
-  // The hosted web app must always keep talking to its own origin.
-  if (window.location.hostname === 'honden.onrender.com') return false
-  // isTauri() depends on an injected init script; older Android WebViews can
-  // miss it, so also accept the IPC globals Tauri always installs.
-  return isTauri() || '__TAURI_INTERNALS__' in window || '__TAURI__' in window
+  const hostname = window.location.hostname
+  // The hosted web app and local dev servers must keep talking to their own
+  // origin. Everything else here is the packaged Tauri app.
+  if (hostname === 'honden.onrender.com' || hostname === 'localhost' || hostname === '127.0.0.1') {
+    return false
+  }
+  if (isTauri() || '__TAURI_INTERNALS__' in window || '__TAURI__' in window) return true
+  // Android WebViews have shipped without the injected Tauri globals. Never
+  // let that fall back to `http://tauri.localhost` for API/WebSocket traffic.
+  return hostname === 'tauri.localhost' || hostname.endsWith('.localhost')
 }
 
 export function remoteOrigin(): string {
@@ -102,12 +124,16 @@ export function remoteOrigin(): string {
 
 /** Wake Render Free before its 15-minute idle suspend. */
 export async function wakeServer(): Promise<boolean> {
+  const url = `${remoteOrigin()}/health?t=${Date.now()}`
   try {
-    const response = await fetch(`${remoteOrigin()}/health?t=${Date.now()}`, {
-      cache: 'no-store',
-    })
+    const response = await fetch(url, { cache: 'no-store' })
+    console.info('[honden:diag] health probe', { url, ok: response.ok, status: response.status })
     return response.ok
-  } catch {
+  } catch (error) {
+    console.warn('[honden:diag] health probe failed', {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    })
     return false
   }
 }
@@ -118,6 +144,7 @@ export function apiUrl(path: string): string {
 }
 
 export function sameOriginWs(path = '/ws'): string {
+  if (isTauriRuntime() && path === '/ws') return RELEASE_WS_URL
   const url = new URL(remoteOrigin())
   const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${url.host}${path}`

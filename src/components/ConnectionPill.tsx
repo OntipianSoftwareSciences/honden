@@ -1,42 +1,52 @@
 import CuteLoader from './CuteLoader'
 import type { ConnectionStatus } from '../types'
 
+export const connectionLabels: Record<ConnectionStatus, string> = {
+  live: 'Connected 🍯',
+  connecting: 'Connecting to the honey den…',
+  reconnecting: 'Reconnecting…',
+  syncing: 'Syncing missed messages…',
+  waking: 'Server is waking up…',
+  unreachable: 'Cannot reach server, tap Retry',
+  disconnected: 'Disconnected',
+}
+
 const config: Record<
   ConnectionStatus,
   { label: string; dot: string; className: string }
 > = {
   live: {
-    label: 'Connected 🍯',
+    label: connectionLabels.live,
     dot: 'bg-leaf-green',
     className: 'border-leaf-green/30 bg-leaf-green/10 text-leaf-green',
   },
   connecting: {
-    label: 'Connecting to the honey den…',
+    label: connectionLabels.connecting,
     dot: 'bg-warm-amber',
     className: 'border-warm-amber/40 bg-warm-amber/20 text-warm-charcoal',
   },
   reconnecting: {
-    label: 'Reconnecting…',
+    label: connectionLabels.reconnecting,
     dot: 'bg-warm-amber',
     className: 'border-warm-amber/40 bg-warm-amber/20 text-warm-charcoal',
   },
   syncing: {
-    label: 'Syncing missed messages…',
+    label: connectionLabels.syncing,
     dot: 'bg-warm-amber',
     className: 'border-warm-amber/40 bg-warm-amber/20 text-warm-charcoal',
   },
   waking: {
-    label: 'Server is waking up…',
+    label: connectionLabels.waking,
     dot: 'bg-warm-amber',
     className: 'border-warm-amber/40 bg-warm-amber/20 text-warm-charcoal',
   },
   unreachable: {
-    label: 'Cannot reach server, tap Retry',
+    label: connectionLabels.unreachable,
     dot: 'bg-soft-red',
     className: 'border-soft-red/30 bg-soft-red/10 text-soft-red',
   },
   disconnected: {
-    label: 'Disconnected',
+    label: connectionLabels.disconnected,
     dot: 'bg-soft-red',
     className: 'border-soft-red/30 bg-soft-red/10 text-soft-red',
   },

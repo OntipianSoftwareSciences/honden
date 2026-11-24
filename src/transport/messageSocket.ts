@@ -1,5 +1,5 @@
 import type { ConnectionStatus } from '../types'
-import { CONNECT_TIMEOUT_MS, reconnectDelay } from './reliability'
+import { CONNECT_TIMEOUT_MS, HEALTH_POLL_MS, reconnectDelay } from './reliability'
 
 export type MessageFrame = {
   type?: string
@@ -21,15 +21,43 @@ export type MessageSocketController = {
   send: (frame: Record<string, unknown>) => void
 }
 
+export type MessageSocketOptions = {
+  connectTimeoutMs?: number
+  healthPollMs?: number
+  probeServer?: () => Promise<boolean>
+}
+
 const HEARTBEAT_MS = 25_000
 const PONG_TIMEOUT_MS = 12_000
 const STALE_TIMEOUT_MS = 60_000
 const STABLE_MS = 30_000
 
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    if (url.searchParams.has('token')) url.searchParams.set('token', '<redacted>')
+    return url.toString()
+  } catch {
+    return value
+  }
+}
+
+function readyStateName(state: number | undefined): string {
+  if (state === WebSocket.OPEN) return 'OPEN'
+  if (state === WebSocket.CLOSING) return 'CLOSING'
+  if (state === WebSocket.CLOSED) return 'CLOSED'
+  if (state === WebSocket.CONNECTING) return 'CONNECTING'
+  return 'NONE'
+}
+
 export function startMessageSocket(
   url: string,
   handlers: MessageSocketHandlers,
+  options: MessageSocketOptions = {},
 ): MessageSocketController {
+  const connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS
+  const healthPollMs = options.healthPollMs ?? HEALTH_POLL_MS
+  const probeServer = options.probeServer
   let currentUrl = url
   let socket: WebSocket | undefined
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -37,6 +65,8 @@ export function startMessageSocket(
   let pongTimer: ReturnType<typeof setTimeout> | undefined
   let stableTimer: ReturnType<typeof setTimeout> | undefined
   let connectTimer: ReturnType<typeof setTimeout> | undefined
+  let healthTimer: ReturnType<typeof setInterval> | undefined
+  let probing = false
   let stopped = false
   let attempt = 0
   let authReady = false
@@ -76,6 +106,39 @@ export function startMessageSocket(
     }
   }
 
+  function clearHealthPolling(): void {
+    if (healthTimer) {
+      clearInterval(healthTimer)
+      healthTimer = undefined
+    }
+  }
+
+  function startHealthPolling(): void {
+    if (!probeServer || stopped || healthTimer) return
+    console.info('[ws:diag] health polling started', {
+      intervalMs: healthPollMs,
+      url: redactUrl(currentUrl),
+    })
+    healthTimer = setInterval(() => {
+      if (stopped || probing) return
+      probing = true
+      void probeServer()
+        .then((awake) => {
+          if (stopped) return
+          console.info('[ws:diag] health poll result', { awake })
+          if (!awake) return
+          clearHealthPolling()
+          restart()
+        })
+        .catch((error: unknown) => {
+          console.warn('[ws:diag] health poll failed', error)
+        })
+        .finally(() => {
+          probing = false
+        })
+    }, healthPollMs)
+  }
+
   function markUnreachable(): void {
     if (stopped) return
     clearConnectTimer()
@@ -90,6 +153,7 @@ export function startMessageSocket(
       if (current.readyState < WebSocket.CLOSING) current.close()
     }
     setStatus('unreachable')
+    startHealthPolling()
   }
 
   function scheduleReconnect(): void {
@@ -98,6 +162,7 @@ export function startMessageSocket(
     if (stopped || reconnectTimer) return
     attempt += 1
     if (!reportedUnreachable) setStatus(attempt >= 3 ? 'waking' : 'reconnecting')
+    if (reportedUnreachable || attempt >= 3) startHealthPolling()
     const delay = reconnectDelay(attempt - 1)
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined
@@ -150,7 +215,8 @@ export function startMessageSocket(
     attempt = 0
     reportedUnreachable = false
     clearConnectTimer()
-    console.info('[ws] sync complete; connection ready')
+    clearHealthPolling()
+    console.info('[ws:diag] sync complete; connection ready')
     setStatus('live')
     if (stableTimer) clearTimeout(stableTimer)
     stableTimer = setTimeout(() => {
@@ -161,6 +227,11 @@ export function startMessageSocket(
   function connect(): void {
     if (stopped) return
     clearConnectTimer()
+    console.info('[ws:diag] connecting', {
+      url: redactUrl(currentUrl),
+      attempt,
+      readyState: readyStateName(socket?.readyState),
+    })
     authReady = false
     syncing = false
     awaitingPong = false
@@ -176,15 +247,19 @@ export function startMessageSocket(
     }
     socket = next
     // Android WebViews can leave a handshake stuck in CONNECTING forever.
-    // Fail over to an honest error state after 10 seconds.
+    // Fail over to an honest error state after the connect timeout.
     connectTimer = setTimeout(() => {
       if (stopped || socket !== next || authReady) return
-      console.warn('[ws] connection timed out after 10s')
+      console.warn('[ws:diag] connection timed out', {
+        timeoutMs: connectTimeoutMs,
+        readyState: readyStateName(next.readyState),
+      })
       markUnreachable()
       scheduleReconnect()
-    }, CONNECT_TIMEOUT_MS)
+    }, connectTimeoutMs)
 
     next.onopen = () => {
+      console.info('[ws:diag] socket open', { url: redactUrl(currentUrl) })
       if (stopped || socket !== next) return
       lastFrameAt = Date.now()
       startHeartbeat()
@@ -204,6 +279,7 @@ export function startMessageSocket(
         return
       }
       if (frame.type === 'ready' && typeof frame.userId === 'string') {
+        console.info('[ws:diag] ready frame received')
         if (!authReady) {
           authReady = true
           void runSync()
@@ -213,18 +289,46 @@ export function startMessageSocket(
       handlers.onFrame(frame)
     }
 
-    next.onerror = () => {
+    next.onerror = (event) => {
       if (stopped || socket !== next) return
-      console.warn('[ws] connection error')
+      console.warn('[ws:diag] socket error', {
+        readyState: readyStateName(next.readyState),
+        message: event instanceof Event ? event.type : String(event),
+      })
     }
 
-    next.onclose = () => {
+    next.onclose = (event) => {
+      console.warn('[ws:diag] socket closed', {
+        code: event.code,
+        reason: event.reason,
+        readyState: readyStateName(next.readyState),
+      })
       if (socket !== next) return
       socket = undefined
       clearHeartbeat()
       if (stopped) return
       scheduleReconnect()
     }
+  }
+
+  function restart(nextUrl = currentUrl): void {
+    if (stopped) return
+    currentUrl = nextUrl
+    clearReconnect()
+    clearConnectTimer()
+    clearHealthPolling()
+    attempt = 0
+    reportedUnreachable = false
+    const current = socket
+    socket = undefined
+    if (current) {
+      current.onopen = null
+      current.onmessage = null
+      current.onerror = null
+      current.onclose = null
+      if (current.readyState < WebSocket.CLOSING) current.close()
+    }
+    connect()
   }
 
   const onOnline = () => {
@@ -251,29 +355,13 @@ export function startMessageSocket(
       clearReconnect()
       clearHeartbeat()
       clearConnectTimer()
+      clearHealthPolling()
       if (stableTimer) clearTimeout(stableTimer)
       const current = socket
       socket = undefined
       if (current && current.readyState < WebSocket.CLOSING) current.close()
     },
-    restart(nextUrl = currentUrl) {
-      if (stopped) return
-      currentUrl = nextUrl
-      clearReconnect()
-      clearConnectTimer()
-      attempt = 0
-      reportedUnreachable = false
-      const current = socket
-      socket = undefined
-      if (current) {
-        current.onopen = null
-        current.onmessage = null
-        current.onerror = null
-        current.onclose = null
-        if (current.readyState < WebSocket.CLOSING) current.close()
-      }
-      connect()
-    },
+    restart,
     send(frame) {
       if (stopped || socket?.readyState !== WebSocket.OPEN) return
       socket.send(JSON.stringify(frame))

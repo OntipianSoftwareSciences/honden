@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { authenticatedWs } from '../src/api/client'
+import { connectionLabels } from '../src/components/ConnectionPill'
+import { startMessageSocket } from '../src/transport/messageSocket'
 import {
   advanceCursor,
   CONNECT_TIMEOUT_MS,
+  HEALTH_POLL_MS,
   isAfterCursor,
   mergeById,
   reconnectDelay,
   WAKE_INTERVAL_MS,
 } from '../src/transport/reliability'
 
-test('connection failure surfaces after 10s and wake stays under Render idle limit', () => {
-  assert.equal(CONNECT_TIMEOUT_MS, 10000)
+test('connection failure surfaces after 15s and health polling stays faster than Render wake', () => {
+  assert.equal(CONNECT_TIMEOUT_MS, 15000)
+  assert.equal(HEALTH_POLL_MS, 5000)
   assert.ok(WAKE_INTERVAL_MS > 0 && WAKE_INTERVAL_MS < 15 * 60 * 1000)
 })
 
@@ -73,4 +78,173 @@ test('mergeById dedupes and sorts by timestamp', () => {
     ['a', 'b', 'c'],
   )
   assert.equal(merged[1]?.text, 'second')
+})
+
+type FakeSocketEvent = { code?: number; reason?: string; data?: string; type?: string }
+
+class FakeWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+
+  readyState = FakeWebSocket.CONNECTING
+  onopen: ((event: FakeSocketEvent) => void) | null = null
+  onmessage: ((event: FakeSocketEvent) => void) | null = null
+  onerror: ((event: FakeSocketEvent) => void) | null = null
+  onclose: ((event: FakeSocketEvent) => void) | null = null
+
+  constructor(readonly url: string) {
+    createdSockets.push(this)
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN
+    this.onopen?.({ type: 'open' })
+  }
+
+  sendReady() {
+    this.onmessage?.({ data: JSON.stringify({ type: 'ready', userId: 'tester' }) })
+  }
+
+  send(_data: string) {
+    // Heartbeat frames are not needed for these state tests.
+  }
+
+  close() {
+    if (this.readyState >= FakeWebSocket.CLOSING) return
+    this.readyState = FakeWebSocket.CLOSED
+    this.onclose?.({ code: 1000, reason: '' })
+  }
+}
+
+const createdSockets: FakeWebSocket[] = []
+const originalInfo = console.info
+const originalWarn = console.warn
+
+function installBrowserEnv(hostname = 'honden.onrender.com', origin = 'https://honden.onrender.com') {
+  createdSockets.length = 0
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: (key: string) => void values.delete(key),
+    },
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      location: { hostname, origin },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    },
+  })
+  Object.defineProperty(globalThis, 'WebSocket', {
+    configurable: true,
+    value: FakeWebSocket,
+  })
+  console.info = () => undefined
+  console.warn = () => undefined
+}
+
+function restoreBrowserEnv() {
+  console.info = originalInfo
+  console.warn = originalWarn
+  for (const key of ['localStorage', 'window', 'WebSocket']) {
+    Reflect.deleteProperty(globalThis, key)
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+test('pill goes Connecting -> Connected when the WebSocket opens', async () => {
+  installBrowserEnv()
+  const statuses: string[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status) => statuses.push(status),
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 1000 },
+  )
+  assert.equal(statuses[0], 'connecting')
+  createdSockets[0]?.open()
+  createdSockets[0]?.sendReady()
+  await delay(20)
+  assert.ok(statuses.includes('syncing'), `expected syncing, got ${statuses.join(',')}`)
+  assert.equal(statuses.at(-1), 'live')
+  assert.equal(connectionLabels.live, 'Connected 🍯')
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('pill goes to Cannot reach server after the connect timeout', async () => {
+  installBrowserEnv()
+  const statuses: string[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status) => statuses.push(status),
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 20, healthPollMs: 1000, probeServer: async () => false },
+  )
+  await delay(60)
+  assert.ok(statuses.includes('unreachable'), `expected unreachable, got ${statuses.join(',')}`)
+  assert.equal(connectionLabels.unreachable, 'Cannot reach server, tap Retry')
+  assert.equal(CONNECT_TIMEOUT_MS, 15000)
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('pill retries and goes Connected after the server wakes', async () => {
+  installBrowserEnv()
+  const statuses: string[] = []
+  let probes = 0
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status) => statuses.push(status),
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    {
+      connectTimeoutMs: 20,
+      healthPollMs: 10,
+      probeServer: async () => {
+        probes += 1
+        return probes >= 2
+      },
+    },
+  )
+  await delay(60)
+  assert.ok(statuses.includes('unreachable'))
+  let retried: FakeWebSocket | undefined
+  for (let i = 0; i < 20 && !createdSockets[1]; i += 1) await delay(10)
+  retried = createdSockets[1]
+  assert.ok(retried, 'health probe should trigger a retry socket')
+  retried.open()
+  retried.sendReady()
+  await delay(20)
+  assert.equal(statuses.at(-1), 'live')
+  assert.ok(probes >= 2)
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('Android build WebSocket URL is wss://honden.onrender.com, not localhost', () => {
+  installBrowserEnv('tauri.localhost', 'http://tauri.localhost')
+  localStorage.setItem('honden.token', 'test.token.value')
+  const url = authenticatedWs('/ws')
+  assert.ok(url.startsWith('wss://honden.onrender.com/ws?'), url)
+  assert.ok(!url.includes('localhost'), url)
+  assert.ok(url.includes('token=test.token.value'), url)
+  restoreBrowserEnv()
 })

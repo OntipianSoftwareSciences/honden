@@ -38,7 +38,12 @@ import {
 } from './transport/channel'
 import type { ChannelStatus } from './transport/channel'
 import { startMessageSocket, type MessageSocketController } from './transport/messageSocket'
-import { advanceCursor, type Cursor, WAKE_INTERVAL_MS } from './transport/reliability'
+import {
+  advanceCursor,
+  type Cursor,
+  HEALTH_POLL_MS,
+  WAKE_INTERVAL_MS,
+} from './transport/reliability'
 import {
   clearChatStorage,
   formatTime,
@@ -732,6 +737,9 @@ export default function App() {
           }
         }
       },
+    }, {
+      healthPollMs: HEALTH_POLL_MS,
+      probeServer: () => wakeServer(),
     })
     callManager.setSignalingSender((event) =>
       controller.send({ ...event, peerName: `@${ownUsername}` }),
