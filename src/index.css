@@ -457,12 +457,37 @@
 
 /* Explicit themes: every white surface follows the active palette. */
 html[data-theme='dark'] [class*='bg-white'],
-html[data-theme='ultra-dark'] [class*='bg-white'] {
+html[data-theme='ultra-dark'] [class*='bg-white'],
+html[data-theme='queen-bee'] [class*='bg-white'] {
   background-color: var(--surface) !important;
 }
 
 html[data-theme='dark'] [class*='bg-warm-cream'],
-html[data-theme='ultra-dark'] [class*='bg-warm-cream'] {
+html[data-theme='ultra-dark'] [class*='bg-warm-cream'],
+html[data-theme='queen-bee'] [class*='bg-warm-cream'] {
   background-color: var(--warm-cream) !important;
+}
+
+/* Queen Bee royal honey accents on shared surfaces and the :3 loader. */
+html[data-theme='queen-bee'] header {
+  box-shadow: inset 0 -1px 0 rgba(247, 183, 51, 0.35);
+}
+
+html[data-theme='queen-bee'] .chat-layout {
+  background-image: radial-gradient(
+    circle at 50% -15%,
+    rgba(247, 183, 51, 0.12),
+    transparent 55%
+  );
+}
+
+html[data-theme='queen-bee'] .cute-loader,
+html[data-theme='queen-bee'] .cute-loader__face,
+html[data-theme='queen-bee'] .call-avatar {
+  box-shadow: 0 0 0 1px rgba(247, 183, 51, 0.35), 0 0 16px rgba(247, 183, 51, 0.16);
+}
+
+html[data-theme='queen-bee'] .call-connected-pill {
+  box-shadow: 0 0 0 1px rgba(255, 107, 157, 0.35), 0 0 14px rgba(255, 107, 157, 0.18);
 }
 

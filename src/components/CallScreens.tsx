@@ -120,7 +120,7 @@ export default function CallScreens({
         />
         {!remoteHasVideo && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-soft-blush">
-            <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white text-4xl font-bold text-heart-pink shadow-soft">
+            <div className="call-avatar flex h-24 w-24 items-center justify-center rounded-full bg-white text-4xl font-bold text-heart-pink shadow-soft">
               :3
             </div>
             <p className="text-[13px] font-semibold text-warm-charcoal">
@@ -149,7 +149,7 @@ export default function CallScreens({
             {snapshot.kind === 'video' ? 'Video call' : 'Voice call'}
           </div>
           {snapshot.state === 'connected' && (
-            <div className="rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-heart-pink shadow-soft">
+            <div className="call-connected-pill rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-heart-pink shadow-soft">
               Connected
             </div>
           )}

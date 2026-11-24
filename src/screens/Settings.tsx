@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { BeforeInstallPromptEvent } from '../hooks/useInstallPrompt'
-import type { Settings, UpdateSetting } from '../hooks/useSettings'
+import type { Settings, ThemeName, UpdateSetting } from '../hooks/useSettings'
 import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
 import Toggle from '../components/Toggle'
@@ -22,6 +22,17 @@ type Props = {
 }
 
 const noteText = 'text-[0.8125rem] text-soft-grey'
+
+// Replace this placeholder with the real Ko-fi page when it is ready.
+// No confirmed Ko-fi URL exists in the repo yet.
+const SUPPORT_URL = 'https://ko-fi.com/REPLACE_WITH_YOUR_KOFI_PAGE'
+
+const themeOptions: ReadonlyArray<{ value: ThemeName; label: string }> = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'ultra-dark', label: 'Ultra Dark' },
+  { value: 'queen-bee', label: 'Queen Bee' },
+]
 
 export default function Settings({
   settings,
@@ -129,25 +140,47 @@ export default function Settings({
           <section className="rounded-2xl border border-border bg-warm-cream p-6">
             <h2 className="mb-3 text-sm font-bold text-pink-ink">Theme</h2>
             <div className="flex flex-wrap gap-2">
-              {(['light', 'dark', 'ultra-dark'] as const).map((theme) => (
+              {themeOptions.map(({ value, label }) => (
                 <button
-                  key={theme}
+                  key={value}
                   type="button"
-                  aria-pressed={settings.theme === theme}
-                  onClick={() => update('theme', theme)}
+                  aria-pressed={settings.theme === value}
+                  onClick={() => update('theme', value)}
                   className={`min-h-11 rounded-xl border px-4 py-2 text-sm font-bold transition ${
-                    settings.theme === theme
+                    settings.theme === value
                       ? 'border-heart-pink bg-heart-pink text-white'
                       : 'border-border text-warm-charcoal hover:bg-soft-blush'
                   }`}
                 >
-                  {theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'Ultra Dark'}
+                  {label}
                 </button>
               ))}
             </div>
             <p className={`mt-3 ${noteText}`}>
-              Choose the look that feels best. The change applies right away.
+              Choose the look that feels best. The change applies right away and is remembered.
             </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-pink-ink">
+              Support us for more themes
+            </h2>
+            <p className="readable-text text-warm-charcoal">
+              Support us for more themes — HonDen is free, no ads, no tracking, no selling your
+              data. Supporting us helps us make more themes, stickers, and sounds.
+            </p>
+            <p className={`mt-2 ${noteText}`}>
+              Queen Bee is free for everyone. Future themes are a supporter perk; core messaging
+              and calls always stay free.
+            </p>
+            <a
+              href={SUPPORT_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl border border-heart-pink px-4 py-2 text-sm font-bold text-pink-ink transition hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              Support HonDen on Ko-fi
+            </a>
           </section>
 
           <section className="rounded-2xl border border-border bg-warm-cream p-6">

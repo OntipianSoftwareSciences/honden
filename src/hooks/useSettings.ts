@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { setSoundSettings } from '../sounds'
 
-export type ThemeName = 'light' | 'dark' | 'ultra-dark'
+export type ThemeName = 'light' | 'dark' | 'ultra-dark' | 'queen-bee'
 
 export type Settings = {
   theme: ThemeName
@@ -39,7 +39,12 @@ const defaults: Settings = {
 }
 
 function isTheme(value: unknown): value is ThemeName {
-  return value === 'light' || value === 'dark' || value === 'ultra-dark'
+  return (
+    value === 'light' ||
+    value === 'dark' ||
+    value === 'ultra-dark' ||
+    value === 'queen-bee'
+  )
 }
 
 export function applyTheme(theme: ThemeName): void {
