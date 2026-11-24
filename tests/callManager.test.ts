@@ -66,6 +66,7 @@ let pcFailures: PcFailures = {}
 
 class FakeRTCPeerConnection {
   static instances: FakeRTCPeerConnection[] = []
+  static configs: RTCConfiguration[] = []
   localDescription: unknown = null
   remoteDescription: unknown = null
   connectionState = 'new'
@@ -76,8 +77,9 @@ class FakeRTCPeerConnection {
   oniceconnectionstatechange: (() => void) | null = null
   private senders: { track: FakeTrack }[] = []
 
-  constructor() {
+  constructor(config?: RTCConfiguration) {
     if (pcFailures.create) throw pcFailures.create
+    FakeRTCPeerConnection.configs.push(config ?? {})
     FakeRTCPeerConnection.instances.push(this)
   }
 
@@ -157,6 +159,7 @@ beforeEach(() => {
   pcFailures = {}
   sent = []
   warnings = []
+  FakeRTCPeerConnection.configs = []
   getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio')])
   enumerateDevicesImpl = async () => [
     { kind: 'videoinput', deviceId: 'cam-1', label: 'Camera' },
@@ -232,6 +235,52 @@ test('video call connects second', async () => {
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'video')
   assert.equal(manager.snapshot().state, 'connected')
   assert.equal(manager.snapshot().error, '')
+})
+
+test('TURN is configured and gathered relay candidates mark TURN working', async () => {
+  getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio'), fakeTrack('video')])
+  await manager.startOutgoing('skypuppy', 'video', '@skypuppy')
+  const callId = manager.snapshot().callId
+  await manager.handleAccept({ type: 'call:accept', from: 'skypuppy', callId, kind: 'video' })
+
+  const config = FakeRTCPeerConnection.configs.at(-1)
+  assert.ok(config, 'peer connection config was not captured')
+  const hasTurn = (config.iceServers ?? []).some((server) => {
+    const urls = typeof server.urls === 'string' ? [server.urls] : server.urls
+    return urls.some((url) => /^turns?:/i.test(url))
+  })
+  assert.equal(hasTurn, true, 'peer connection was created without a TURN server')
+
+  const pc = FakeRTCPeerConnection.instances.at(-1)
+  assert.ok(pc)
+  pc.iceConnectionState = 'checking'
+  const relayCandidate = 'candidate:1 1 udp 1 192.0.2.1 3478 typ relay'
+  pc.onicecandidate?.({
+    candidate: {
+      type: 'relay',
+      candidate: relayCandidate,
+      sdpMid: '0',
+      sdpMLineIndex: 0,
+      toJSON: () => ({ candidate: relayCandidate, sdpMid: '0', sdpMLineIndex: 0 }),
+    },
+  })
+
+  const iceEvent = sent.find((event) => event.type === 'call:ice')
+  assert.equal(iceEvent?.candidate?.candidate, relayCandidate)
+
+  ;(manager as unknown as { refreshDiagnostic: () => void }).refreshDiagnostic()
+  assert.match(manager.snapshot().connectDiagnostic, /TURN: working/)
+  assert.equal(manager.snapshot().state, 'connecting')
+})
+
+test('connect diagnostic does not claim TURN failed before ICE starts', async () => {
+  await manager.startOutgoing('skypuppy', 'video', '@skypuppy')
+  ;(manager as unknown as { refreshDiagnostic: () => void }).refreshDiagnostic()
+
+  const diagnostic = manager.snapshot().connectDiagnostic
+  assert.match(diagnostic, /ICE: not started/)
+  assert.match(diagnostic, /TURN: pending/)
+  assert.doesNotMatch(diagnostic, /TURN: not working/)
 })
 
 test('voice getUserMedia failure shows the exact DOMException', async () => {

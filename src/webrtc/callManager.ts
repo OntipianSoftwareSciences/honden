@@ -138,14 +138,18 @@ function normalizeIceUrls(values: string[]): string[] {
 }
 
 const defaultStunUrls = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
-// The old openrelay.metered.ca name now resolves to a blackhole address. OpenRelay's
-// current free endpoint is the static-auth host documented by Metered. Its shared secret
-// is public; we derive a short-lived username/credential pair from it in the browser.
-// Override with VITE_TURN_URLS / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL in env.
+// Metered retired the shared OpenRelay credentials. staticauth.openrelay.metered.ca
+// now resolves to a blackhole (no TCP/ICMP response on 80 or 443) and rejects
+// allocations, so leaving it as the fallback silently disabled relay whenever the
+// runtime config fetch failed on a flaky mobile connection. Keep the current global
+// relay host and include TCP + TLS transports so a strict phone network still has a
+// relay path. A runtime /api/turn-config response with per-account credentials always
+// takes precedence over these defaults.
 const defaultTurnUrls = [
-  'turn:staticauth.openrelay.metered.ca:80',
-  'turn:staticauth.openrelay.metered.ca:443',
-  'turn:staticauth.openrelay.metered.ca:443?transport=tcp',
+  'turn:global.relay.metered.ca:80',
+  'turn:global.relay.metered.ca:443',
+  'turn:global.relay.metered.ca:443?transport=tcp',
+  'turns:global.relay.metered.ca:443?transport=tcp',
 ]
 const defaultTurnSecret = 'openrelayprojectsecret'
 const envTurnUrls = parseIceUrls(
@@ -172,19 +176,36 @@ function cleanEnvValue(value: unknown): string {
 
 type RuntimeTurnConfig = { urls?: unknown; username?: unknown; credential?: unknown }
 
+// A phone can drop the config fetch while switching between Wi-Fi and mobile data.
+// Remember the last config the server actually returned so one failed request cannot
+// push the call onto the built-in fallback mid-session.
+let lastGoodRuntimeTurn: RuntimeTurnConfig | null = null
+
 async function fetchRuntimeTurn(): Promise<RuntimeTurnConfig | null> {
-  if (typeof fetch === 'undefined' || typeof localStorage === 'undefined') return null
-  try {
-    const response = await fetch(apiUrl(`/api/turn-config?t=${Date.now()}`), {
-      headers: authHeaders(),
-      cache: 'no-store',
-    })
-    if (!response.ok) return null
-    const data = (await response.json()) as RuntimeTurnConfig
-    return data && typeof data === 'object' ? data : null
-  } catch {
-    return null
+  if (typeof fetch === 'undefined' || typeof localStorage === 'undefined') {
+    return lastGoodRuntimeTurn
   }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(apiUrl(`/api/turn-config?t=${Date.now()}`), {
+        headers: authHeaders(),
+        cache: 'no-store',
+      })
+      if (response.ok) {
+        const data = (await response.json()) as RuntimeTurnConfig
+        if (data && typeof data === 'object') {
+          lastGoodRuntimeTurn = data
+          return data
+        }
+      }
+    } catch {
+      // Transient network failure. Try once more before reusing the cached config.
+    }
+    if (attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  return lastGoodRuntimeTurn
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -464,8 +485,11 @@ class CallManager {
       this.clearDiagnostic()
       return
     }
-    const ice = this.pc?.iceConnectionState ?? 'checking'
-    const turn = this.relayCandidateSeen ? 'working' : 'not working'
+    // With no peer connection there is no ICE state and no TURN result yet. Say
+    // so instead of printing fake "checking"/"not working" values while the call
+    // is still waiting for the other side to accept.
+    const ice = this.pc ? this.pc.iceConnectionState || 'checking' : 'not started'
+    const turn = !this.pc ? 'pending' : this.relayCandidateSeen ? 'working' : 'not working'
     const mic = this.micFound ? 'found' : 'not found'
     const camera = this.cameraFound ? 'found' : 'not found'
     this.connectDiagnostic = `Still connecting, ICE: ${ice}, TURN: ${turn}, Mic: ${mic}, Camera: ${camera}`
