@@ -448,3 +448,94 @@ test('permission errors are not treated as missing devices', async () => {
   assert.ok(warnings.includes('[call] getUserMedia failed: NotAllowedError'))
   assertNoMessageLogged('Permission denied')
 })
+
+test('video answered as voice falls back cleanly on the caller', async () => {
+  getUserMediaImpl = async () => new FakeMediaStream([fakeTrack('audio'), fakeTrack('video')])
+  await manager.startOutgoing('heather', 'video', '@heather')
+  const callId = manager.snapshot().callId
+
+  await manager.handleAccept({
+    type: 'call:accept',
+    from: 'heather',
+    callId,
+    kind: 'voice',
+  })
+
+  const snapshot = manager.snapshot()
+  assert.equal(snapshot.kind, 'voice')
+  assert.equal(snapshot.notice, 'Video unavailable on the other device, using voice only')
+  const pc = FakeRTCPeerConnection.instances.at(-1)
+  assert.equal(pc?.getSenders().some((sender) => sender.track.kind === 'video'), false)
+})
+
+test('answering video without a camera sends a voice accept with the plain notice', async () => {
+  enumerateDevicesImpl = async () => []
+  const requested: MediaStreamConstraints[] = []
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    if (next.video) throw new DOMException('Requested device not found', 'NotFoundError')
+    return new FakeMediaStream([fakeTrack('audio')])
+  }
+
+  manager.handleInvite({
+    type: 'call:invite',
+    from: 'heather',
+    callId: 'call-no-camera',
+    kind: 'video',
+    peerName: '@heather',
+  })
+  await manager.accept()
+
+  const snapshot = manager.snapshot()
+  assert.equal(snapshot.kind, 'voice')
+  assert.equal(snapshot.cameraCount, 0)
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
+  assert.deepEqual(requested, [
+    { audio: true, video: true },
+    { audio: true, video: false },
+  ])
+  assert.equal(sent.find((event) => event.type === 'call:accept')?.kind, 'voice')
+})
+
+test('answerer ICE failure asks the offerer to restart', async () => {
+  manager.handleInvite({
+    type: 'call:invite',
+    from: 'heather',
+    callId: 'call-ice',
+    kind: 'voice',
+    peerName: '@heather',
+  })
+  await manager.accept()
+  await manager.handleOffer({
+    type: 'call:offer',
+    from: 'heather',
+    callId: 'call-ice',
+    sdp: { type: 'offer', sdp: 'v=0 offer' },
+  })
+  const pc = FakeRTCPeerConnection.instances.at(-1)
+  assert.ok(pc)
+  pc.connectionState = 'connected'
+  pc.onconnectionstatechange?.()
+  assert.equal(manager.snapshot().state, 'connected')
+
+  sent.length = 0
+  pc.connectionState = 'failed'
+  pc.onconnectionstatechange?.()
+
+  const retry = sent.find((event) => event.type === 'call:retry')
+  assert.ok(retry, 'answerer should ask the offerer to restart ICE')
+  assert.equal(retry?.to, 'heather')
+})
+
+test('retry while connected rebuilds the peer without ping-pong retries', async () => {
+  const callId = await placeCall('voice')
+  const offersBefore = sent.filter((event) => event.type === 'call:offer').length
+  sent.length = 0
+
+  await manager.handleRetry({ type: 'call:retry', from: 'heather', callId })
+
+  assert.equal(sent.filter((event) => event.type === 'call:retry').length, 0)
+  assert.equal(sent.filter((event) => event.type === 'call:offer').length, offersBefore)
+  assert.equal(manager.snapshot().state, 'connecting')
+  assert.equal(manager.snapshot().notice, 'Reconnecting...')
+})

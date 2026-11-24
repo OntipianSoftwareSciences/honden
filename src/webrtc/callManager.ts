@@ -33,6 +33,7 @@ type SignalingSender = (event: SignalEvent) => void
 const micMissingMessage =
   'No microphone found on this device, voice call cannot start, use a USB headset or your phone'
 const noCameraMessage = 'No camera found, use Voice call instead'
+const videoUnavailableMessage = 'Video unavailable on the other device, using voice only'
 
 type CallStage =
   | 'getUserMedia'
@@ -156,7 +157,6 @@ let cachedIceConfigAt = 0
 // TURN credentials can be rotated in Render without a redeploy. A long-lived tab
 // must not keep using the credentials it loaded when the page first opened.
 const ICE_CONFIG_TTL_MS = 60_000
-let useRelayOnly = false
 
 // Render service env vars are available to the server at runtime, but Vite only
 // bakes VITE_* vars into the bundle at build time. Prefer the runtime config so
@@ -247,12 +247,10 @@ async function getIceServers(forceRefresh = false): Promise<RTCIceServer[]> {
       username: envUsername,
       credential: envCredential,
     })
-    // Chrome stops ICE gathering as soon as a host/srflx pair connects, which
-    // can leave a configured TURN server completely unused. Send all media
-    // through the configured relay so it is actually exercised.
-    useRelayOnly = true
+    // TURN is always offered, but never forced: if Metered is unreachable or
+    // its credentials have rotated, a host/srflx pair can still carry the call.
+    // Relay-only mode turned a TURN outage into a dead call with no candidates.
   } else {
-    useRelayOnly = false
     if (turnUrls.length > 0) {
       console.warn('[call] TURN URL set but username/credential missing, using default')
     }
@@ -578,6 +576,11 @@ class CallManager {
       void this.rebuildPeerConnection(label)
       return
     }
+    // Only the offerer can send the restart offer. If the answering side lost
+    // ICE, ask that offerer to restart instead of waiting for a dead peer.
+    if (!this.restartInitiator && this.peerId && this.callId) {
+      this.emitSignal({ type: 'call:retry', to: this.peerId, callId: this.callId })
+    }
     void this.tryIceRestart(label)
   }
 
@@ -642,7 +645,6 @@ class CallManager {
 
     const iceServers = freshConfig ? await refreshIceConfig() : await getIceServers()
     const config: RTCConfiguration = { iceServers }
-    if (useRelayOnly) config.iceTransportPolicy = 'relay'
     const pc = new RTCPeerConnection(config)
     this.pc = pc
     this.remote = new MediaStream()
@@ -984,6 +986,7 @@ class CallManager {
         type: 'call:accept',
         to: this.peerId,
         callId: this.callId,
+        kind: this.kind,
       })
     } catch (error) {
       this.fail(callErrorText(stage, error))
@@ -1031,6 +1034,18 @@ class CallManager {
     let stage: CallStage = 'getUserMedia'
     try {
       const stream = await this.ensureLocalStream()
+      // The answerer may have had to drop video for a missing camera. Match
+      // that decision here so the caller stops showing a dead video call.
+      if (event.kind === 'voice' && this.kind === 'video') {
+        this.kind = 'voice'
+        this.lastKind = 'voice'
+        this.notice = videoUnavailableMessage
+        for (const track of stream.getVideoTracks()) {
+          stream.removeTrack(track)
+          track.stop()
+        }
+        this.emit()
+      }
       stage = 'peer connection'
       const pc = await this.ensurePeerConnection()
       this.attachLocalTracks(pc, stream)
@@ -1117,11 +1132,23 @@ class CallManager {
 
   async handleRetry(event: SignalEvent) {
     if (event.callId !== this.callId) return
-    if (this.state !== 'calling' && this.state !== 'connecting') return
+    if (
+      this.state !== 'calling' &&
+      this.state !== 'connecting' &&
+      this.state !== 'connected'
+    ) {
+      return
+    }
     signalLog('Retry received', this.callId)
     this.clearDiagnostic()
-    this.notice = ''
+    if (this.state === 'connected') {
+      this.state = 'connecting'
+      this.notice = 'Reconnecting...'
+    } else {
+      this.notice = ''
+    }
     this.startConnectTimer()
+    // Do not echo the retry back; that makes both peers rebuild in a loop.
     await this.rebuildPeerConnection('peer-retry')
   }
 
