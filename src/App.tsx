@@ -72,6 +72,12 @@ import {
   type SignalEvent,
 } from './api/client'
 import { callManager, type CallSnapshot } from './webrtc/callManager'
+import {
+  dismissAndroidCallAlert,
+  prepareAndroidPush,
+  showAndroidCallAlert,
+  showAndroidMessageAlert,
+} from './net/androidNotifications'
 import { playNewMessage } from './sounds'
 import type {
   AccountUser,
@@ -506,6 +512,11 @@ export default function App() {
   const syncAllRef = useRef<() => Promise<void>>(async () => undefined)
   const socketRef = useRef<MessageSocketController | null>(null)
   const deepLinkHandled = useRef(false)
+  const pushFlagsRef = useRef({
+    call: settings.callNotifications,
+    message: settings.gentleNotifications,
+  })
+  const previousCallStateRef = useRef(call.state)
   const [user, setUser] = useState<AccountUser>(loadAccount)
   const [username, setUsername] = useState(ownUsername)
   const [identity, setIdentity] = useState<Identity | null>(null)
@@ -693,6 +704,24 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    pushFlagsRef.current = {
+      call: settings.callNotifications,
+      message: settings.gentleNotifications,
+    }
+  }, [settings.callNotifications, settings.gentleNotifications])
+
+  useEffect(() => {
+    void prepareAndroidPush()
+  }, [])
+
+  useEffect(() => {
+    if (previousCallStateRef.current === 'incoming' && call.state !== 'incoming') {
+      void dismissAndroidCallAlert(call.callId)
+    }
+    previousCallStateRef.current = call.state
+  }, [call.callId, call.state])
+
+  useEffect(() => {
     if (!authToken) return
     const controller = startMessageSocket(authenticatedWs('/ws'), {
       onStatus: (next) => {
@@ -719,6 +748,10 @@ export default function App() {
             } catch {
               // Ignore audio failures.
             }
+            void showAndroidMessageAlert(
+              { chatId: wire.chatId, sender: wire.sender },
+              pushFlagsRef.current.message,
+            )
           }
           void toChatMessage(wire, identityRef.current)
             .then((chat) => {
@@ -753,6 +786,15 @@ export default function App() {
           switch (event.type) {
             case 'call:invite':
               callManager.handleInvite(event)
+              void showAndroidCallAlert(
+                {
+                  callId: event.callId ?? '',
+                  sender: event.from ?? '',
+                  senderName: event.peerName ?? '',
+                  kind: event.kind ?? 'voice',
+                },
+                pushFlagsRef.current.call,
+              )
               break
             case 'call:accept':
               void callManager.handleAccept(event)

@@ -1,12 +1,20 @@
 import { apiUrl, authHeaders } from '../api/client'
+import {
+  isAndroidPushRuntime,
+  prepareAndroidPush,
+  requestAndroidNotificationPermission,
+} from './androidNotifications'
 
 export type PushKind = 'call' | 'message'
 export type PushFlags = { callNotifications: boolean; messageNotifications: boolean }
 export type PushResult = 'ok' | 'blocked' | 'unsupported' | 'error'
 
 export function pushSupported(): boolean {
+  if (typeof window === 'undefined') return false
+  // Android WebView has no Notification/PushManager. The APK uses native
+  // notifications instead of a Web Push subscription.
+  if (isAndroidPushRuntime()) return true
   return (
-    typeof window !== 'undefined' &&
     'Notification' in window &&
     'serviceWorker' in navigator &&
     'PushManager' in window
@@ -78,6 +86,17 @@ export async function setPushKind(
   enabled: boolean,
   current: PushFlags,
 ): Promise<PushResult> {
+  if (isAndroidPushRuntime()) {
+    if (!enabled) return 'ok'
+    try {
+      const permission = await requestAndroidNotificationPermission()
+      if (permission === 'denied') return 'blocked'
+      if (permission !== 'granted') return 'error'
+      return (await prepareAndroidPush()) ? 'ok' : 'error'
+    } catch {
+      return 'error'
+    }
+  }
   if (!pushSupported()) return 'unsupported'
   const next: PushFlags =
     kind === 'call'

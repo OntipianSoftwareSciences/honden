@@ -6,6 +6,7 @@ import type { RelayState } from '../transport/channel'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
 import { pushSupported, setPushKind, type PushKind } from '../net/push'
+import { isAndroidPushRuntime } from '../net/androidNotifications'
 
 type Props = {
   settings: Settings
@@ -43,7 +44,12 @@ export default function Settings({
   const [installHandled, setInstallHandled] = useState(false)
 
   async function changePush(kind: PushKind, enabled: boolean) {
-    if (enabled && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+    if (
+      !isAndroidPushRuntime() &&
+      enabled &&
+      typeof Notification !== 'undefined' &&
+      Notification.permission !== 'granted'
+    ) {
       const permission = await Notification.requestPermission()
       if (permission === 'denied') {
         setNotificationsBlocked(true)
@@ -330,17 +336,19 @@ export default function Settings({
               <div className="flex items-center justify-between gap-4 py-2">
                 <div>
                   <p className="font-bold">Call notifications</p>
-                  <p className={noteText}>Incoming calls, even when the app is closed.</p>
+                  <p className={noteText}>Incoming calls, even when HonDen is not in focus.</p>
                   {notificationsBlocked && (
                     <p className={noteText}>
-                      Notifications are blocked in Firefox. Allow them in Firefox Settings &gt;
-                      Privacy &gt; Notifications for honden.onrender.com, then try again.
+                      {isAndroidPushRuntime()
+                        ? 'Notifications are blocked on this device. Allow them in Android Settings > Notifications > HonDen, then try again.'
+                        : 'Notifications are blocked in Firefox. Allow them in Firefox Settings > Privacy > Notifications for honden.onrender.com, then try again.'}
                     </p>
                   )}
                   {pushSetupError && (
                     <p className={noteText}>
-                      Push notifications are unavailable right now. The site needs its VAPID keys
-                      configured on the server, then try again.
+                      {isAndroidPushRuntime()
+                        ? 'Alerts are unavailable on this device right now. Try again.'
+                        : 'Push notifications are unavailable right now. The site needs its VAPID keys configured on the server, then try again.'}
                     </p>
                   )}
                 </div>
