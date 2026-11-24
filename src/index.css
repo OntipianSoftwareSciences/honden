@@ -330,7 +330,6 @@
   position: relative;
   width: 100%;
   max-width: 100%;
-  overflow: hidden;
 }
 
 .chat-layout__chat,
@@ -364,6 +363,20 @@
 }
 
 @media (max-width: 767px) {
+  .chat-layout {
+    height: 100vh;
+    height: 100dvh;
+    height: 100svh;
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  .chat-layout__list,
+  .chat-layout__chat {
+    height: 100%;
+    min-height: 0;
+  }
+
   .chat-layout[data-columns='2'],
   .chat-layout[data-columns='3'] {
     grid-template-columns: minmax(0, 1fr);

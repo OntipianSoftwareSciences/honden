@@ -1264,7 +1264,7 @@ export default function App() {
           />
         </aside>
         <div className="chat-layout__chat flex min-w-0 flex-col">
-          <header className="flex shrink-0 items-center gap-3 border-b border-border bg-white px-4 py-3">
+          <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-white px-4 py-3">
             <button
               type="button"
               onClick={() => setScreen('chats')}
@@ -1273,7 +1273,7 @@ export default function App() {
             >
               ←
             </button>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-[8rem] flex-1">
               {isGlobal ? (
                 <>
                   <p className="readable-text break-words font-semibold text-warm-charcoal">
@@ -1609,7 +1609,7 @@ export default function App() {
     )
   } else if (screen === 'chats') {
     screenView = (
-      <div className="h-[100dvh] w-full overflow-hidden bg-warm-cream md:flex">
+      <div className="h-[100dvh] min-h-0 w-full bg-warm-cream md:flex">
         <aside className="hidden w-[280px] shrink-0 flex-col items-center gap-3 border-r border-border bg-white py-4 md:flex lg:w-[300px]">
           <UserChip
             user={user}
@@ -1617,7 +1617,7 @@ export default function App() {
             onSecurity={() => setModal('security')}
           />
         </aside>
-        <div className="min-w-0 w-full flex-1">
+        <div className="h-full min-h-0 w-full min-w-0 flex-1">
           <EmptyChat
             threads={visibleThreads}
             messages={messages}

@@ -43,7 +43,7 @@ export default function EmptyChat({
   return (
     <main className={`screen-fade h-full w-full bg-warm-cream ${compact ? '' : 'min-h-screen'}`}>
       <div className={`flex h-full w-full flex-col border-0 bg-white ${compact ? '' : 'min-h-screen'}`}>
-        <header className={`flex shrink-0 items-center gap-3 border-b border-border ${compact ? 'px-4 py-3' : 'px-6 py-4'}`}>
+        <header className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border ${compact ? 'px-4 py-3' : 'px-4 py-3 sm:px-6 sm:py-4'}`}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg" aria-hidden="true">
             🍯
           </span>
@@ -53,14 +53,14 @@ export default function EmptyChat({
             <button
               type="button"
               onClick={onOpenSettings}
-              className="ml-auto rounded-xl border border-border px-4 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              className="ml-auto shrink-0 rounded-xl border border-border px-4 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
             >
               Settings
             </button>
           )}
         </header>
 
-        <section className={compact ? 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4' : 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 py-8 sm:px-10'}>
+        <section className={compact ? 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4' : 'touch-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-6 sm:px-10 sm:py-8'}>
           <div className={`flex flex-col gap-3 ${compact ? 'mb-4' : 'mb-6 sm:flex-row sm:items-center sm:justify-between'}`}>
             <h1 className={`flex items-center gap-2 font-bold text-warm-charcoal ${compact ? 'readable-text' : 'text-[20px]'}`}>
               Your conversations
@@ -132,7 +132,7 @@ export default function EmptyChat({
         </section>
 
         {!compact && (
-          <div className="border-t border-border px-6 py-4">
+          <div className="shrink-0 border-t border-border px-4 py-4 sm:px-6">
             <p className="text-center text-sm text-soft-grey">
               Start a conversation with someone you care about.
             </p>
