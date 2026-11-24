@@ -58,20 +58,31 @@ test('Queen Bee theme choice is remembered from stored settings', () => {
   assert.equal(readStoredTheme(), 'light')
 })
 
-test('Queen Bee palette and surface overrides are defined', () => {
+test('Queen Bee gold honey palette and surface overrides are defined', () => {
   const themeCss = readFileSync(new URL('../src/styles/theme.css', import.meta.url), 'utf8')
   const indexCss = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  const queenBeeBlock = themeCss.split("html[data-theme='queen-bee']")[1] ?? ''
 
   assert.match(themeCss, /html\[data-theme='queen-bee'\]/)
-  assert.match(themeCss, /--heart-pink:\s*#FF6B9D;/)
-  assert.match(themeCss, /--warm-charcoal:\s*#FFF7F2;/)
-  assert.match(themeCss, /--warm-cream:\s*#24122B;/)
-  assert.match(themeCss, /--surface:\s*#3A2140;/)
-  assert.match(themeCss, /--soft-blush:\s*#4E2C49;/)
-  assert.match(themeCss, /--warm-amber:\s*#F7B733;/)
+  assert.match(queenBeeBlock, /--heart-pink:\s*#FF6B9D;/)
+  assert.match(queenBeeBlock, /--warm-charcoal:\s*#FFF7F2;/)
+  assert.match(queenBeeBlock, /--warm-cream:\s*#2A1E0D;/)
+  assert.match(queenBeeBlock, /--surface:\s*#3B2A12;/)
+  assert.match(queenBeeBlock, /--soft-blush:\s*#4E3716;/)
+  assert.match(queenBeeBlock, /--soft-grey:\s*#F3D79B;/)
+  assert.match(queenBeeBlock, /--warm-amber:\s*#F7B733;/)
+  assert.match(queenBeeBlock, /--border:\s*#9A6B20;/)
+
+  assert.doesNotMatch(queenBeeBlock, /#24122B/)
+  assert.doesNotMatch(queenBeeBlock, /#3A2140/)
+  assert.doesNotMatch(queenBeeBlock, /#4E2C49/)
+  assert.doesNotMatch(queenBeeBlock, /#7A4A63/)
 
   assert.match(indexCss, /html\[data-theme='queen-bee'\] \[class\*='bg-white'\]/)
   assert.match(indexCss, /html\[data-theme='queen-bee'\] \[class\*='bg-warm-cream'\]/)
+  assert.match(indexCss, /html\[data-theme='queen-bee'\] button\.bg-heart-pink/)
+  assert.match(indexCss, /html\[data-theme='queen-bee'\] \.call-connected-pill[\s\S]*--warm-amber/)
+  assert.match(indexCss, /html\[data-theme='queen-bee'\] \.call-avatar[\s\S]*--warm-amber/)
 })
 
 test('support section does not break Settings and Queen Bee is selectable', () => {
