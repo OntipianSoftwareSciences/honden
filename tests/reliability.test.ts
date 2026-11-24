@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { authenticatedWs } from '../src/api/client'
-import { connectionLabels } from '../src/components/ConnectionPill'
+import { connectionLabels, wakePillView } from '../src/components/ConnectionPill'
 import { startMessageSocket } from '../src/transport/messageSocket'
 import {
   advanceCursor,
@@ -10,13 +10,59 @@ import {
   isAfterCursor,
   mergeById,
   reconnectDelay,
+  startWakeCountdown,
+  stopWakeCountdown,
+  tickWakeCountdown,
+  WAKE_ESTIMATE_SECONDS,
   WAKE_INTERVAL_MS,
 } from '../src/transport/reliability'
 
-test('connection failure surfaces after 15s and health polling stays faster than Render wake', () => {
-  assert.equal(CONNECT_TIMEOUT_MS, 15000)
+test('connection failure surfaces after the 30s wake estimate and health polling stays faster than Render wake', () => {
+  assert.equal(CONNECT_TIMEOUT_MS, 30000)
+  assert.equal(WAKE_ESTIMATE_SECONDS, 30)
   assert.equal(HEALTH_POLL_MS, 5000)
   assert.ok(WAKE_INTERVAL_MS > 0 && WAKE_INTERVAL_MS < 15 * 60 * 1000)
+})
+
+test('wake countdown starts at 30 and ticks down once per second', () => {
+  let countdown = startWakeCountdown()
+  assert.equal(countdown.secondsLeft, 30)
+  assert.equal(countdown.stopped, false)
+  const first = wakePillView('waking', countdown)
+  assert.equal(first.showCountdown, true)
+  assert.equal(first.label, 'Server is waking up… 30s')
+  countdown = tickWakeCountdown(countdown)
+  assert.equal(wakePillView('waking', countdown).label, 'Server is waking up… 29s')
+  countdown = tickWakeCountdown(countdown)
+  assert.equal(
+    wakePillView('connecting', countdown).label,
+    'Connecting to the honey den… 28s',
+  )
+})
+
+test('wake countdown stops immediately when the server connects early', () => {
+  const stopped = stopWakeCountdown(tickWakeCountdown(startWakeCountdown()))
+  assert.equal(tickWakeCountdown(stopped).secondsLeft, 29, 'no ticks after Connected')
+  const connected = wakePillView('live', stopped)
+  assert.equal(connected.showCountdown, false)
+  assert.equal(connected.showRetry, false)
+  assert.equal(connected.label, connectionLabels.live)
+})
+
+test('wake pill shows Retry at 0 and never restarts the countdown by itself', () => {
+  let countdown = startWakeCountdown()
+  for (let i = 0; i < 30; i += 1) countdown = tickWakeCountdown(countdown)
+  assert.deepEqual(countdown, { secondsLeft: 0, stopped: true })
+  assert.deepEqual(tickWakeCountdown(countdown), countdown)
+  const retry = wakePillView('unreachable', countdown)
+  assert.equal(retry.showRetry, true)
+  assert.equal(retry.showCountdown, false)
+  assert.equal(retry.label, 'Cannot reach server, tap Retry')
+  assert.equal(
+    wakePillView('connecting', countdown).showRetry,
+    true,
+    'background retries must not restart the countdown',
+  )
 })
 
 test('reconnectDelay backs off and caps at 30s', () => {
@@ -250,7 +296,7 @@ test('pill goes to Cannot reach server after the connect timeout', async () => {
   await delay(60)
   assert.ok(statuses.includes('unreachable'), `expected unreachable, got ${statuses.join(',')}`)
   assert.equal(connectionLabels.unreachable, 'Cannot reach server, tap Retry')
-  assert.equal(CONNECT_TIMEOUT_MS, 15000)
+  assert.equal(CONNECT_TIMEOUT_MS, 30000)
   controller.close()
   restoreBrowserEnv()
 })
