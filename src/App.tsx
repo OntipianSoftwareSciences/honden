@@ -765,8 +765,9 @@ export default function App() {
   }, [settings.callNotifications, settings.gentleNotifications])
 
   useEffect(() => {
-    void prepareAndroidPush()
-  }, [])
+    if (!authToken) return
+    void prepareAndroidPush().catch(() => undefined)
+  }, [authToken])
 
   useEffect(() => {
     if (!isTauriRuntime()) return

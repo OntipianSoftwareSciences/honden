@@ -24,9 +24,13 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![commands::get_fcm_token])
         .setup(|app, api| {
             #[cfg(mobile)]
-            mobile::init(app, api)?;
+            if let Err(error) = mobile::init(app, api) {
+                eprintln!("[honden-fcm] setup failed: {error}");
+            }
             #[cfg(desktop)]
-            desktop::init(app, api)?;
+            if let Err(error) = desktop::init(app, api) {
+                eprintln!("[honden-fcm] setup failed: {error}");
+            }
             Ok(())
         })
         .build()
