@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Runtime, plugin::PluginHandle};
 
 /// Response shape returned to JavaScript: `{ token: string | null }`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TokenResponse {
     pub token: Option<String>,
 }

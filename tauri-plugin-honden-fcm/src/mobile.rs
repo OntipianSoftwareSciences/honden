@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Runtime, plugin::PluginApi};
+use tauri::{AppHandle, Runtime, Manager, plugin::PluginApi};
 
 use crate::HondenFcm;
 
