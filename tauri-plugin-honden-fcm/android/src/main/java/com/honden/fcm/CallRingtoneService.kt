@@ -102,7 +102,7 @@ class CallRingtoneService : Service() {
         val callback = PendingIntent.getActivity(
             this,
             22,
-            Fcm.deepLink(call.callId, call.sender, call.kind, "callback"),
+            Intent(Intent.ACTION_VIEW, Fcm.deepLink(call.callId, call.sender, call.kind, "callback")),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val displayName = call.sender.replaceFirstChar { it.uppercaseChar() }

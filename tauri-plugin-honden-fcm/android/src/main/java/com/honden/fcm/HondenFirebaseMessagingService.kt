@@ -44,7 +44,7 @@ class HondenFirebaseMessagingService : FirebaseMessagingService() {
         val openApp = PendingIntent.getActivity(
             this,
             12,
-            Fcm.deepLink(callId, sender, kind, "open"),
+            Intent(Intent.ACTION_VIEW, Fcm.deepLink(callId, sender, kind, "open")),
             immutable
         )
 
