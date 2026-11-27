@@ -32,6 +32,8 @@ export type MessageSocketOptions = {
   retryIntervalMs?: number
   maxRetries?: number
   probeServer?: () => Promise<boolean>
+  /** Native logger hook; the app forwards this to Tauri/Android logcat. */
+  onLog?: (message: string) => void
 }
 
 const HEARTBEAT_MS = 25_000
@@ -47,6 +49,25 @@ function redactUrl(value: string): string {
   } catch {
     return value
   }
+}
+
+/**
+ * Keep the full scheme/host/path for diagnostics, but drop the auth token:
+ * the WebSocket URL carries `?token=...` and tokens must never be logged.
+ */
+function loggableWsUrl(value: string): string {
+  try {
+    const url = new URL(value)
+    url.searchParams.delete('token')
+    return url.toString()
+  } catch {
+    return value.replace(/([?&]token=)[^&#\s]*/gi, '$1<omitted>')
+  }
+}
+
+function safeErrorText(value: unknown): string {
+  const text = value instanceof Error ? value.message : String(value)
+  return text.replace(/([?&]token=)[^&#\s]*/gi, '$1<omitted>')
 }
 
 function readyStateName(state: number | undefined): string {
@@ -67,6 +88,7 @@ export function startMessageSocket(
   const retryIntervalMs = options.retryIntervalMs ?? RETRY_INTERVAL_MS
   const maxRetries = options.maxRetries ?? MAX_CONNECT_RETRIES
   const probeServer = options.probeServer
+  const emitLog = options.onLog ?? (() => undefined)
   let currentUrl = url
   let socket: WebSocket | undefined
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -99,6 +121,20 @@ export function startMessageSocket(
 
   function setStatus(status: ConnectionStatus, withDetail = false): void {
     handlers.onStatus(status, withDetail ? connectionDetail() : undefined)
+  }
+
+  function attemptNumber(): number {
+    return Math.min(retryCount + 1, maxRetries)
+  }
+
+  function logAttempt(): void {
+    emitLog(
+      `HonDen connect retry ${attemptNumber()}/${maxRetries} to ${loggableWsUrl(currentUrl)}`,
+    )
+  }
+
+  function logFailure(message: string): void {
+    emitLog(`HonDen connect failed ${attemptNumber()}/${maxRetries}: ${safeErrorText(message)}`)
   }
 
   function clearReconnect(): void {
@@ -308,6 +344,7 @@ export function startMessageSocket(
       attempt: retryCount,
       readyState: readyStateName(socket?.readyState),
     })
+    logAttempt()
     authReady = false
     syncing = false
     awaitingPong = false
@@ -317,7 +354,8 @@ export function startMessageSocket(
     let next: WebSocket
     try {
       next = new WebSocket(currentUrl)
-    } catch {
+    } catch (error) {
+      logFailure(safeErrorText(error))
       scheduleRetry()
       return
     }
@@ -327,6 +365,7 @@ export function startMessageSocket(
     // never arrive. The 30s deadline below still owns the overall wake window.
     connectTimer = setTimeout(() => {
       if (stopped || socket !== next || authReady) return
+      logFailure(`handshake timed out after ${retryIntervalMs}ms`)
       console.warn('[ws:diag] handshake still pending, retrying', {
         readyState: readyStateName(next.readyState),
       })
@@ -370,6 +409,7 @@ export function startMessageSocket(
 
     next.onerror = (event) => {
       if (stopped || socket !== next) return
+      logFailure(event instanceof Event ? event.type : String(event))
       console.warn('[ws:diag] socket error', {
         readyState: readyStateName(next.readyState),
         message: event instanceof Event ? event.type : String(event),
@@ -388,6 +428,9 @@ export function startMessageSocket(
         readyState: readyStateName(next.readyState),
       })
       if (socket !== next) return
+      logFailure(
+        `socket closed code ${event.code}${event.reason ? `: ${event.reason}` : ''}`,
+      )
       socket = undefined
       clearHeartbeat()
       if (stopped) return

@@ -32,6 +32,7 @@ import {
 } from './crypto/e2ee'
 import { currentInvite, inviteUrl, relayUrl, rotateInvite } from './net/invite'
 import type { Invite } from './net/invite'
+import { logToAndroid } from './net/androidLog'
 import {
   connectRelay,
   disconnectRelay,
@@ -953,6 +954,7 @@ export default function App() {
     }, {
       healthPollMs: HEALTH_POLL_MS,
       probeServer: () => wakeServer(),
+      onLog: logToAndroid,
     })
     callManager.setSignalingSender((event) =>
       controller.send({ ...event, peerName: `@${ownUsername}` }),

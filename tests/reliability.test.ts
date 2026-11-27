@@ -465,6 +465,39 @@ test('stalled handshake still retries when Android WebView close() throws', asyn
   restoreBrowserEnv()
 })
 
+test('every stalled attempt logs a native line with the URL and no token', async () => {
+  installBrowserEnv()
+  const logs: string[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=super-secret-token',
+    {
+      onStatus: () => undefined,
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    {
+      connectTimeoutMs: 200,
+      retryIntervalMs: 5,
+      maxRetries: 6,
+      onLog: (message) => logs.push(message),
+    },
+  )
+  await delay(80)
+  const attempts = logs.filter((line) => line.startsWith('HonDen connect retry'))
+  const failures = logs.filter((line) => line.startsWith('HonDen connect failed'))
+  assert.equal(attempts.length, 7, 'initial attempt plus six retries must all be logged')
+  assert.equal(failures.length, 7, 'each failed attempt must log its error')
+  assert.equal(
+    attempts[0],
+    'HonDen connect retry 1/6 to wss://honden.onrender.com/ws',
+  )
+  assert.ok(attempts.some((line) => line.includes('retry 6/6')))
+  assert.ok(failures.every((line) => line.includes('handshake timed out')))
+  assert.ok(logs.every((line) => !line.includes('super-secret-token')))
+  controller.close()
+  restoreBrowserEnv()
+})
+
 test('Android build WebSocket URL is wss://honden.onrender.com, not localhost', () => {
   installBrowserEnv('tauri.localhost', 'http://tauri.localhost')
   localStorage.setItem('honden.token', 'test.token.value')
