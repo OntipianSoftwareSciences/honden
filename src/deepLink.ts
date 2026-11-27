@@ -4,6 +4,8 @@ export type DeepLink = {
   callFrom: string
   callId: string
   callKind: 'video' | 'voice' | null
+  callAction: 'accept' | 'decline' | 'callback' | 'open' | null
+  callBack: boolean
 }
 
 function clean(value: string | null): string {
@@ -22,5 +24,13 @@ export function parseDeepLink(search: string): DeepLink {
     callFrom,
     callId: (params.get('callId') ?? '').trim(),
     callKind: kind === 'video' || kind === 'voice' ? kind : null,
+    callAction:
+      params.get('callAction') === 'accept' ||
+      params.get('callAction') === 'decline' ||
+      params.get('callAction') === 'callback' ||
+      params.get('callAction') === 'open'
+        ? (params.get('callAction') as 'accept' | 'decline' | 'callback' | 'open')
+        : null,
+    callBack: params.get('callBack') === '1',
   }
 }

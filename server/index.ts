@@ -8,6 +8,7 @@ import express, { type Request } from 'express'
 import { Pool } from 'pg'
 import { WebSocket, WebSocketServer } from 'ws'
 import * as webPush from 'web-push'
+import { fcmConfigured, sendFcmCallMessage } from './fcm.js'
 import {
   canAccessConversation,
   createSecret,
@@ -322,6 +323,14 @@ async function initStorage(): Promise<void> {
     await activePool.query(
       'ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS message_notifications boolean NOT NULL DEFAULT false',
     )
+    await activePool.query(`
+        CREATE TABLE IF NOT EXISTS fcm_tokens (
+          token text PRIMARY KEY,
+          username text NOT NULL,
+          device_id text,
+          call_notifications boolean NOT NULL DEFAULT true
+        )
+      `)
     await activePool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS private_key_backup jsonb')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text')
     await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id text')
@@ -639,20 +648,21 @@ app.post('/api/public-key', async (req, res) => {
     res.status(401).json({ error: accountError })
     return
   }
-  const body = req.body as { publicJwk?: unknown; fromBackup?: unknown } | undefined
+  const body = req.body as { publicJwk?: unknown; fromBackup?: unknown; fromPassword?: unknown } | undefined
   const publicJwk = body?.publicJwk
   const fromBackup = body?.fromBackup === true
+  const fromPassword = body?.fromPassword === true
   const user = users.find((item) => item.username === username)
   if (!user || !publicJwk || typeof publicJwk !== 'object' || Array.isArray(publicJwk)) {
     res.status(400).json({ error: accountError })
     return
   }
-  // A client that just decrypted the password-wrapped backup proves it owns the
-  // account key, so it may repair a stale public key stored by an old device.
-  if (!user.publicJwk || !user.privateKeyBackup || fromBackup) {
+  // A client that decrypted the backup, or logged in with the account password,
+  // proves it owns the account and may repair a stale key from an old device.
+  if (!user.publicJwk || !user.privateKeyBackup || fromBackup || fromPassword) {
     user.publicJwk = publicJwk as Record<string, unknown>
     await persistUsers()
-    console.info(`Public key stored${fromBackup ? ' from backup' : ''}`, username)
+    console.info(`Public key stored${fromBackup ? ' from backup' : fromPassword ? ' from password login' : ''}`, username)
   }
   res.json({ ok: true, publicJwk: user.publicJwk })
 })
@@ -780,6 +790,61 @@ app.delete('/api/push-subscription', async (req, res) => {
   } catch (error) {
     console.error(
       '[push] subscription delete failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    res.status(503).json({ error: errorCopy })
+  }
+})
+
+app.post('/api/fcm-token', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer || !pool) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const body = req.body as { token?: unknown; deviceId?: unknown; callNotifications?: unknown }
+  const token = typeof body?.token === 'string' ? body.token.trim() : ''
+  if (!token || token.length > 4096) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  try {
+    await pool.query(
+      `INSERT INTO fcm_tokens (token, username, device_id, call_notifications)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (token) DO UPDATE SET
+         username = EXCLUDED.username,
+         device_id = EXCLUDED.device_id,
+         call_notifications = EXCLUDED.call_notifications`,
+      [token, viewer, typeof body.deviceId === 'string' ? body.deviceId : '', body.callNotifications !== false],
+    )
+    res.json({ ok: true })
+  } catch (error) {
+    console.error(
+      '[fcm] token save failed',
+      error instanceof Error ? error.message : 'unknown',
+    )
+    res.status(503).json({ error: errorCopy })
+  }
+})
+
+app.delete('/api/fcm-token', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer || !pool) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const token = (req.body as { token?: unknown } | undefined)?.token
+  if (typeof token !== 'string' || !token) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  try {
+    await pool.query('DELETE FROM fcm_tokens WHERE token = $1 AND username = $2', [token, viewer])
+    res.json({ ok: true })
+  } catch (error) {
+    console.error(
+      '[fcm] token delete failed',
       error instanceof Error ? error.message : 'unknown',
     )
     res.status(503).json({ error: errorCopy })
@@ -1162,6 +1227,33 @@ function sendIncomingCallPush(
   )
 }
 
+async function sendFcmCallPush(
+  recipient: string,
+  caller: string,
+  callId: string,
+  kind: 'video' | 'voice',
+  type: 'incoming-call' | 'call:cancel',
+): Promise<void> {
+  if (!pool || !fcmConfigured()) return
+  const to = normalizeCallUsername(recipient)
+  const sender = normalizeCallUsername(caller)
+  if (!to || !sender || !callId) return
+  // Self-cancel is valid when the callee declines natively and the caller is
+  // also the FCM recipient; self-invites are never valid.
+  if (to === sender && type !== 'call:cancel') return
+  const result = await pool.query(
+    `SELECT token FROM fcm_tokens WHERE username = $1 AND call_notifications = TRUE`,
+    [to],
+  )
+  await Promise.all(
+    result.rows.map((row) =>
+      typeof row.token === 'string'
+        ? sendFcmCallMessage(row.token, { type, callId, sender, kind })
+        : Promise.resolve(false),
+    ),
+  )
+}
+
 wss.on('connection', (socket, request) => {
   let token: string | undefined
   let deviceId = ''
@@ -1195,6 +1287,8 @@ wss.on('connection', (socket, request) => {
       callId?: unknown
       peerName?: unknown
       kind?: unknown
+      chatId?: unknown
+      isTyping?: unknown
     }
     try {
       frame = JSON.parse(raw.toString()) as {
@@ -1203,12 +1297,34 @@ wss.on('connection', (socket, request) => {
         callId?: unknown
         peerName?: unknown
         kind?: unknown
+        chatId?: unknown
+        isTyping?: unknown
       }
     } catch {
       return
     }
     if (frame.type === 'ping') {
       sendIfOpen(socket, { type: 'pong' })
+      return
+    }
+    if (frame.type === 'typing') {
+      // Only IDs and the flag cross the wire — never message content.
+      if (!isValidChatId(frame.chatId, globalThreadId) || typeof frame.isTyping !== 'boolean') {
+        return
+      }
+      const chatId = frame.chatId
+      if (
+        chatId !== globalThreadId &&
+        chatId !== user &&
+        !users.some((entry) => entry.username === chatId)
+      ) {
+        return
+      }
+      const payload = { type: 'typing', chatId, userId: user, isTyping: frame.isTyping }
+      for (const peer of clients) {
+        if (peer.user === user || peer.socket.readyState !== WebSocket.OPEN) continue
+        if (chatId === globalThreadId || peer.user === chatId) sendIfOpen(peer.socket, payload)
+      }
       return
     }
     if (
@@ -1233,13 +1349,21 @@ wss.on('connection', (socket, request) => {
           peer.socket.send(payload)
         }
       }
+      const callKind = frame.kind === 'video' ? 'video' : 'voice'
       if (frame.type === 'call:invite') {
-        void sendIncomingCallPush(
-          to,
-          user,
-          frame.callId,
-          frame.kind === 'video' ? 'video' : 'voice',
-        ).catch(() => undefined)
+        void sendIncomingCallPush(to, user, frame.callId, callKind).catch(() => undefined)
+        void sendFcmCallPush(to, user, frame.callId, callKind, 'incoming-call').catch(
+          () => undefined,
+        )
+      }
+      if (
+        frame.type === 'call:hangup' ||
+        frame.type === 'call:reject' ||
+        frame.type === 'call:accept'
+      ) {
+        void sendFcmCallPush(to, user, frame.callId, callKind, 'call:cancel').catch(
+          () => undefined,
+        )
       }
     }
   })
@@ -1274,6 +1398,9 @@ app.post('/api/call-decline', (req, res) => {
       sendIfOpen(client.socket, { type: 'call:reject', to: caller, from: caller, callId })
     }
   }
+  // The native decline path may run while the caller's app is killed, so also
+  // send the minimal cancel push. No message contents or audio are included.
+  void sendFcmCallPush(caller, caller, callId, 'voice', 'call:cancel').catch(() => undefined)
   res.json({ ok: true })
 })
 

@@ -6,3 +6,5 @@ server-dist
 .DS_Store
 *.local
 .env
+google-services.json
+src-tauri/gen/android/

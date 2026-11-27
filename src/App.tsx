@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { Lock, Phone, Video } from 'lucide-react'
 import CallScreens from './components/CallScreens'
 import ConnectionPill from './components/ConnectionPill'
@@ -63,10 +65,20 @@ import {
 } from './store/messages'
 import type { OutboxMessage, Thread } from './store/messages'
 import {
+  TYPING_START_MS,
+  TYPING_STOP_MS,
+  pruneTyping,
+  typingLabel,
+  typingThreadId,
+  updateTyping,
+  type TypingMap,
+} from './typing/indicator'
+import {
   apiUrl,
   authHeaders,
   authenticatedWs,
   getSignalToken,
+  isTauriRuntime,
   wakeServer,
   type CallKind,
   type SignalEvent,
@@ -74,10 +86,12 @@ import {
 import { callManager, type CallSnapshot } from './webrtc/callManager'
 import {
   dismissAndroidCallAlert,
+  isAndroidPushRuntime,
   prepareAndroidPush,
   showAndroidCallAlert,
   showAndroidMessageAlert,
 } from './net/androidNotifications'
+import { registerFcmToken } from './net/fcm'
 import { playNewMessage } from './sounds'
 import type {
   AccountUser,
@@ -196,7 +210,13 @@ async function decryptWireText(
 async function toChatMessage(message: WireMessage, identity: Identity | null): Promise<ChatMessage> {
   const timestamp = new Date(message.time).getTime()
   const sender = normalizeUsername(message.sender)
-  const text = await decryptWireText(message.text, identity, sender, message.chatId)
+  let activeIdentity = identity
+  if (!activeIdentity && message.chatId !== globalThreadId && looksEncrypted(message.text)) {
+    // A live DM can arrive before React publishes the identity that just loaded.
+    const loaded = await loadIdentity(ownUsername).catch(() => null)
+    activeIdentity = loaded?.identity ?? null
+  }
+  const text = await decryptWireText(message.text, activeIdentity, sender, message.chatId)
   const threadId =
     message.chatId === globalThreadId ? globalThreadId : sender === ownUsername ? message.chatId : sender
   return {
@@ -298,15 +318,14 @@ async function identityFromPrivateJwk(privateJwk: JsonWebKey): Promise<Identity>
   return { privateKey, publicKey, publicJwk }
 }
 
-type LoadedIdentity = { identity: Identity; fromBackup: boolean }
+type LoadedIdentity = { identity: Identity; fromBackup: boolean; fromPassword: boolean }
 
 async function loadIdentity(username: string, password?: string): Promise<LoadedIdentity> {
   const key = `honden.identity.${username}`
   const serverJwk = await fetchPublicJwk(username)
-  let backupExists = false
+  let backupUnusable = false
   if (password) {
     const backup = await fetchKeyBackup()
-    backupExists = Boolean(backup)
     if (backup) {
       const privateJwk = await restorePrivateKey(backup, password)
       if (privateJwk) {
@@ -317,8 +336,11 @@ async function loadIdentity(username: string, password?: string): Promise<Loaded
             JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }),
           )
           console.log('Identity restored from account backup', username)
-          return { identity, fromBackup: true }
+          return { identity, fromBackup: true, fromPassword: false }
         } catch {}
+      } else {
+        // A password reset leaves the old backup wrapped with the old password.
+        backupUnusable = true
       }
     }
   }
@@ -326,31 +348,25 @@ async function loadIdentity(username: string, password?: string): Promise<Loaded
   if (raw) {
     try {
       const saved = JSON.parse(raw) as { privateJwk: JsonWebKey; publicJwk: JsonWebKey }
-      const privateKey = await crypto.subtle.importKey(
-        'jwk',
-        saved.privateJwk,
-        ecdh,
-        true,
-        ['deriveBits'],
-      )
-      const publicKey = await importPublicKey(saved.publicJwk)
-      if (serverJwk && !samePublicJwk(saved.publicJwk, serverJwk)) {
-        throw new KeyMismatchError()
-      }
+      const identity = await identityFromPrivateJwk(saved.privateJwk)
+      // The stored public half must belong to the stored private half; otherwise
+      // DMs are encrypted with a key nobody else can reproduce.
+      if (!samePublicJwk(identity.publicJwk, saved.publicJwk)) throw new KeyMismatchError()
+      if (serverJwk && !samePublicJwk(saved.publicJwk, serverJwk)) throw new KeyMismatchError()
+      if (backupUnusable) throw new KeyMismatchError()
       console.log('Key loaded', username)
-      return { identity: { privateKey, publicKey, publicJwk: saved.publicJwk }, fromBackup: false }
+      return { identity, fromBackup: false, fromPassword: false }
     } catch (error) {
-      if (error instanceof KeyMismatchError) throw error
+      // Only a password-backed login may replace a stale or mismatched key.
+      if (error instanceof KeyMismatchError && !password) throw error
     }
   }
-  // An account with a public key but no backup lost its original key; a fresh
-  // login is allowed to establish one. With a backup, only the backup wins.
-  if (serverJwk && (!password || backupExists)) throw new KeyMismatchError()
+  if (serverJwk && !password) throw new KeyMismatchError()
   const identity = await createIdentity()
   const privateJwk = await crypto.subtle.exportKey('jwk', identity.privateKey)
   localStorage.setItem(key, JSON.stringify({ privateJwk, publicJwk: identity.publicJwk }))
   console.log('Key created', username)
-  return { identity, fromBackup: false }
+  return { identity, fromBackup: false, fromPassword: Boolean(password) }
 }
 
 async function ensureKeyBackup(identity: Identity, password?: string): Promise<void> {
@@ -363,12 +379,17 @@ async function ensureKeyBackup(identity: Identity, password?: string): Promise<v
   }
 }
 
-async function publishKey(username: string, identity: Identity, fromBackup = false) {
+async function publishKey(
+  username: string,
+  identity: Identity,
+  fromBackup = false,
+  fromPassword = false,
+) {
   try {
     const response = await fetch(apiUrl('/api/public-key'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ username, publicJwk: identity.publicJwk, fromBackup }),
+      body: JSON.stringify({ username, publicJwk: identity.publicJwk, fromBackup, fromPassword }),
     })
     if (!response.ok) {
       console.error('Public key upload failed', username, response.status)
@@ -505,13 +526,18 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
   const [call, setCall] = useState<CallSnapshot>(() => callManager.snapshot())
   const [draft, setDraft] = useState('')
+  const [typingByThread, setTypingByThread] = useState<TypingMap>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const composerRef = useRef<HTMLInputElement>(null)
+  const typingStartTimer = useRef<number | undefined>(undefined)
+  const typingStopTimer = useRef<number | undefined>(undefined)
+  const typingActive = useRef(false)
   const flushingOutbox = useRef(false)
   const syncCursorRef = useRef<Cursor | null>(null)
   const syncAllRef = useRef<() => Promise<void>>(async () => undefined)
   const socketRef = useRef<MessageSocketController | null>(null)
-  const deepLinkHandled = useRef(false)
+  const deepLinkHandled = useRef('')
+  const [nativeDeepLink, setNativeDeepLink] = useState(deepLink)
   const pushFlagsRef = useRef({
     call: settings.callNotifications,
     message: settings.gentleNotifications,
@@ -532,6 +558,7 @@ export default function App() {
   const longPressClearTimer = useRef<number | undefined>(undefined)
   const messageBounce = useTouchBounce()
   const installPrompt = useInstallPrompt()
+  const activeTypingLabel = typingLabel(typingByThread[activeThreadId] ?? [])
 
   function scheduleOffline() {
     if (offlineTimer.current !== undefined) return
@@ -552,7 +579,17 @@ export default function App() {
   useEffect(() => {
     const node = messageBounce.ref.current
     if (node) node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
-  }, [messages.length, activeThreadId, messageBounce.ref])
+  }, [messages.length, activeThreadId, activeTypingLabel, messageBounce.ref])
+
+  // A peer can close the app before sending "stopped"; expire on our side too.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTypingByThread((current) => pruneTyping(current))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => () => stopTyping(activeThreadId), [activeThreadId])
 
   useEffect(() => {
     void startChannel().then(() => setStatus(getChannelStatus()))
@@ -664,10 +701,13 @@ export default function App() {
   }, [authToken, username])
 
   useEffect(() => {
-    if (!authToken || deepLinkHandled.current) return
-    const target = deepLink.chatId || deepLink.callFrom
+    if (!authToken) return
+    const link = nativeDeepLink
+    const target = link.chatId || link.callFrom
     if (!target) return
-    deepLinkHandled.current = true
+    const key = `${target}|${link.callId}|${link.callAction}|${link.callBack}`
+    if (deepLinkHandled.current === key) return
+    deepLinkHandled.current = key
     if (threads.some((thread) => thread.id === target)) {
       openThread(target)
     } else {
@@ -675,21 +715,28 @@ export default function App() {
         if (added) openThread(target)
       })
     }
-    if (deepLink.callFrom && deepLink.callId) {
+    if (link.callFrom && (link.callAction === 'callback' || link.callBack)) {
+      void callManager.startOutgoing(link.callFrom, 'voice', `@${link.callFrom}`)
+      return
+    }
+    // Tapping the notification body only opens the call screen; it must never
+    // silently accept (and possibly enable the camera) on the user's behalf.
+    if (link.callFrom && link.callId && link.callAction !== 'open') {
+      const action = link.callAction === 'decline' ? 'decline' : 'accept'
       window.dispatchEvent(
         new MessageEvent('message', {
           data: {
             type: 'honden:call-action',
-            action: 'accept',
-            callId: deepLink.callId,
-            sender: deepLink.callFrom,
-            senderName: deepLink.callFrom,
-            kind: deepLink.callKind ?? 'voice',
+            action,
+            callId: link.callId,
+            sender: link.callFrom,
+            senderName: link.callFrom,
+            kind: link.callKind ?? 'voice',
           },
         }),
       )
     }
-  }, [authToken, threads])
+  }, [authToken, threads, nativeDeepLink])
 
   useEffect(() => {
     syncAllRef.current = syncAll
@@ -715,6 +762,38 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!isTauriRuntime()) return
+    let active = true
+    const apply = (url: string | undefined) => {
+      if (!active || !url) return
+      try {
+        setNativeDeepLink(parseDeepLink(new URL(url).search))
+      } catch {
+        // Ignore malformed deep links; never switch call state on bad input.
+      }
+    }
+    void invoke<string[] | null>('plugin:deep-link|get_current')
+      .then((urls) => apply(urls?.[0]))
+      .catch(() => undefined)
+    let unlisten: (() => void) | undefined
+    void listen<string[]>('deep-link://new-url', (event) => apply(event.payload?.[0]))
+      .then((stop) => {
+        if (active) unlisten = stop
+        else stop()
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!authToken) return
+    void registerFcmToken()
+  }, [authToken])
+
+  useEffect(() => {
     if (previousCallStateRef.current === 'incoming' && call.state !== 'incoming') {
       void dismissAndroidCallAlert(call.callId)
     }
@@ -735,6 +814,15 @@ export default function App() {
       onFrame: (frame) => {
         if (frame.type === 'message' && frame.message) {
           const wire = frame.message as WireMessage
+          const sender = normalizeUsername(wire.sender ?? '')
+          const messageThreadId =
+            wire.chatId === globalThreadId
+              ? globalThreadId
+              : sender === ownUsername
+                ? wire.chatId
+                : sender
+          // The delivered message ends the typing line without waiting for a timer.
+          setTypingByThread((current) => updateTyping(current, messageThreadId, sender, false))
           if (wire.id && wire.time) {
             syncCursorRef.current = advanceCursor(syncCursorRef.current, {
               time: wire.time,
@@ -778,6 +866,18 @@ export default function App() {
               console.warn('[message] live message failed', error)
             })
         }
+        if (frame.type === 'typing') {
+          const sender = normalizeUsername(
+            typeof frame.userId === 'string' ? frame.userId : '',
+          )
+          const chatId = typeof frame.chatId === 'string' ? frame.chatId : ''
+          if (sender && sender !== ownUsername && chatId && frame.isTyping !== undefined) {
+            const threadId = typingThreadId(chatId, sender, ownUsername, globalThreadId)
+            setTypingByThread((current) =>
+              updateTyping(current, threadId, sender, frame.isTyping === true),
+            )
+          }
+        }
         if (frame.type === 'delete' && frame.id) {
           setMessages((current) => current.filter((item) => item.id !== frame.id))
         }
@@ -786,15 +886,19 @@ export default function App() {
           switch (event.type) {
             case 'call:invite':
               callManager.handleInvite(event)
-              void showAndroidCallAlert(
-                {
-                  callId: event.callId ?? '',
-                  sender: event.from ?? '',
-                  senderName: event.peerName ?? '',
-                  kind: event.kind ?? 'voice',
-                },
-                pushFlagsRef.current.call,
-              )
+              // Native FCM owns the lock-screen call UI on Android; the old
+              // Web Push alert would duplicate it.
+              if (!isAndroidPushRuntime()) {
+                void showAndroidCallAlert(
+                  {
+                    callId: event.callId ?? '',
+                    sender: event.from ?? '',
+                    senderName: event.peerName ?? '',
+                    kind: event.kind ?? 'voice',
+                  },
+                  pushFlagsRef.current.call,
+                )
+              }
               break
             case 'call:accept':
               void callManager.handleAccept(event)
@@ -1018,7 +1122,7 @@ export default function App() {
       return
     }
     setIdentity(loaded.identity)
-    await publishKey(name, loaded.identity, loaded.fromBackup)
+    await publishKey(name, loaded.identity, loaded.fromBackup, loaded.fromPassword)
     await ensureKeyBackup(loaded.identity, password)
     syncCursorRef.current = null
     ownUsername = name
@@ -1103,12 +1207,55 @@ export default function App() {
     void callManager.startOutgoing(peerId, kind, peerName)
   }
 
+  function sendTyping(chatId: string, isTyping: boolean) {
+    if (!chatId || !authToken) return
+    // Deliberately no message text: only the chat ID, user ID and flag go out.
+    socketRef.current?.send({ type: 'typing', chatId, userId: ownUsername, isTyping })
+  }
+
+  function stopTyping(chatId: string) {
+    if (typingStartTimer.current !== undefined) {
+      window.clearTimeout(typingStartTimer.current)
+      typingStartTimer.current = undefined
+    }
+    if (typingStopTimer.current !== undefined) {
+      window.clearTimeout(typingStopTimer.current)
+      typingStopTimer.current = undefined
+    }
+    if (typingActive.current) {
+      typingActive.current = false
+      if (chatId) sendTyping(chatId, false)
+    }
+  }
+
+  function changeDraft(value: string) {
+    setDraft(value)
+    const chatId = activeThreadId
+    if (!chatId || !value.trim()) {
+      stopTyping(chatId)
+      return
+    }
+    if (typingStopTimer.current !== undefined) window.clearTimeout(typingStopTimer.current)
+    typingStopTimer.current = window.setTimeout(() => stopTyping(chatId), TYPING_STOP_MS)
+    // One "is typing" per burst: wait 300ms from the first keystroke, then
+    // never re-send while the same burst continues.
+    if (!typingActive.current && typingStartTimer.current === undefined) {
+      typingStartTimer.current = window.setTimeout(() => {
+        typingStartTimer.current = undefined
+        if (!typingActive.current) {
+          typingActive.current = true
+          sendTyping(chatId, true)
+        }
+      }, TYPING_START_MS)
+    }
+  }
+
   function insertEmoji(emoji: string) {
     const node = composerRef.current
     const start = node?.selectionStart ?? draft.length
     const end = node?.selectionEnd ?? draft.length
     const next = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`
-    setDraft(next)
+    changeDraft(next)
     window.setTimeout(() => {
       node?.focus()
       node?.setSelectionRange(start + emoji.length, start + emoji.length)
@@ -1116,11 +1263,12 @@ export default function App() {
   }
 
   function mentionUser(username: string) {
-    setDraft((current) => current.replace(/(^|\s)@([a-z0-9_]*)$/, `$1@${username} `))
+    changeDraft(draft.replace(/(^|\s)@([a-z0-9_]*)$/, `$1@${username} `))
     composerRef.current?.focus()
   }
 
   function sendGif(gif: GifResult, chatId = activeThreadId) {
+    stopTyping(chatId)
     void sendMessage(chatId, '', gif.url)
     setPickerOpen(false)
   }
@@ -1128,6 +1276,7 @@ export default function App() {
   function submitDraft(chatId = activeThreadId) {
     const value = draft.trim()
     if (!value) return
+    stopTyping(chatId)
     void sendMessage(chatId, value)
     setDraft('')
   }
@@ -1527,6 +1676,18 @@ export default function App() {
                 </div>
               </div>
             ))}
+            {typingLabel(typingByThread[threadId] ?? []) && (
+              <div className="flex justify-start" role="status" aria-live="polite">
+                <div className="flex items-center gap-2 rounded-2xl border border-border bg-warm-cream px-4 py-2 text-[13px] text-soft-grey">
+                  <span>{typingLabel(typingByThread[threadId] ?? [])}</span>
+                  <span className="typing-indicator" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="relative z-20 shrink-0 border-t border-border bg-white p-4">
@@ -1565,7 +1726,7 @@ export default function App() {
                 enterKeyHint="send"
                 aria-label="Message"
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => changeDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault()
@@ -1745,7 +1906,8 @@ export default function App() {
       )}
       <CallScreens
         snapshot={call}
-        onAccept={() => void callManager.accept()}
+        onAcceptVoice={() => void callManager.acceptAs('voice')}
+        onAcceptVideo={() => void callManager.acceptAs('video')}
         onReject={() => callManager.reject()}
         onHangup={() => callManager.hangup()}
         onRetry={() => void callManager.retry()}

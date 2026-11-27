@@ -45,7 +45,7 @@ type SignalingSender = (event: SignalEvent) => void
 
 const micMissingMessage =
   'No microphone found on this device, voice call cannot start, use a USB headset or your phone'
-const noCameraMessage = 'No camera found, continuing as voice only'
+const noCameraMessage = 'No camera found, use Voice call instead'
 const videoUnavailableMessage = 'Video unavailable on the other device, continuing as voice only'
 
 type CallStage =
@@ -1090,6 +1090,16 @@ class CallManager {
     }
   }
 
+  async acceptAs(kind: CallKind) {
+    if (this.state !== 'incoming') return
+    if (kind === 'voice' && this.kind === 'video') {
+      this.kind = 'voice'
+      this.lastKind = 'voice'
+      this.emit()
+    }
+    await this.accept()
+  }
+
   async retry() {
     if (!this.retryAvailable || (this.state !== 'connecting' && this.state !== 'calling')) return
     signalLog('Retry requested', this.callId)
@@ -1257,6 +1267,7 @@ class CallManager {
   }
 
   handleReject(event: SignalEvent) {
+    this.error = 'Declined'
     this.handleHangup(event)
   }
 

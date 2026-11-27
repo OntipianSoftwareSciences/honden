@@ -11,7 +11,8 @@ import {
 
 type Props = {
   snapshot: CallSnapshot
-  onAccept: () => void
+  onAcceptVoice: () => void
+  onAcceptVideo: () => void
   onReject: () => void
   onHangup: () => void
   onRetry: () => void
@@ -24,7 +25,8 @@ type Props = {
 
 export default function CallScreens({
   snapshot,
-  onAccept,
+  onAcceptVoice,
+  onAcceptVideo,
   onReject,
   onHangup,
   onRetry,
@@ -88,7 +90,7 @@ export default function CallScreens({
           <p className="mt-2 text-center text-[13px] text-soft-grey">
             Only you and {caller} can see this call.
           </p>
-          <div className="mt-6 flex gap-3">
+          <div className="mt-6 flex flex-wrap gap-3">
             <button
               type="button"
               onClick={onReject}
@@ -98,10 +100,17 @@ export default function CallScreens({
             </button>
             <button
               type="button"
-              onClick={onAccept}
+              onClick={onAcceptVoice}
+              className="min-h-12 flex-1 rounded-xl border border-heart-pink bg-white px-3 py-3 text-base font-bold text-heart-pink transition hover:bg-soft-blush"
+            >
+              Answer as Voice
+            </button>
+            <button
+              type="button"
+              onClick={onAcceptVideo}
               className="min-h-12 flex-1 rounded-xl bg-heart-pink px-3 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
             >
-              {isVideo ? 'Answer as Video' : 'Answer as Voice'}
+              Answer as Video
             </button>
           </div>
         </div>

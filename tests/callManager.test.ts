@@ -542,7 +542,7 @@ test('video call with no camera falls back to audio-only and stays Connected', a
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
-  assert.equal(snapshot.notice, 'No camera found, continuing as voice only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'voice')
   assert.ok(warnings.includes('[call] camera unavailable: NotFoundError'))
   assertNoMessageLogged('Requested device not found')
@@ -567,7 +567,7 @@ test('video call with camera permission denied falls back to audio-only and stay
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
-  assert.equal(snapshot.notice, 'No camera found, continuing as voice only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
   assert.equal(sent.find((event) => event.type === 'call:invite')?.kind, 'voice')
   assert.ok(warnings.includes('[call] camera unavailable: NotAllowedError'))
 })
@@ -592,7 +592,7 @@ test('video call with every camera constraint rejected falls back to audio-only'
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
-  assert.equal(snapshot.notice, 'No camera found, continuing as voice only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
 })
 
 test('enabling a camera during a voice-only call adds video without re-calling', async () => {
@@ -628,7 +628,7 @@ test('video call with a stream but no video track shows the plain camera message
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'connected')
   assert.equal(snapshot.kind, 'voice')
-  assert.equal(snapshot.notice, 'No camera found, continuing as voice only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
 })
 
 test('missing microphone fails with a plain message, not a generic connect error', async () => {
@@ -729,12 +729,50 @@ test('answering video without a camera sends a voice accept with the plain notic
   const snapshot = manager.snapshot()
   assert.equal(snapshot.kind, 'voice')
   assert.equal(snapshot.cameraCount, 0)
-  assert.equal(snapshot.notice, 'No camera found, continuing as voice only')
+  assert.equal(snapshot.notice, 'No camera found, use Voice call instead')
   assert.deepEqual(requested, [
     { audio: true, video: video720p },
     { audio: true, video: false },
   ])
   assert.equal(sent.find((event) => event.type === 'call:accept')?.kind, 'voice')
+})
+
+test('a declined incoming call shows Declined', () => {
+  manager.handleInvite({
+    type: 'call:invite',
+    from: 'heather',
+    callId: 'call-declined',
+    kind: 'voice',
+    peerName: '@heather',
+  })
+  manager.handleReject({
+    type: 'call:reject',
+    from: 'heather',
+    callId: 'call-declined',
+  })
+  assert.equal(manager.snapshot().state, 'ended')
+  assert.equal(manager.snapshot().error, 'Declined')
+})
+
+test('answering a video invite as voice never requests a camera', async () => {
+  const requested: MediaStreamConstraints[] = []
+  getUserMediaImpl = async (next) => {
+    requested.push(next)
+    if (next.video) throw new Error('voice answer must not request video')
+    return new FakeMediaStream([fakeTrack('audio')])
+  }
+  manager.handleInvite({
+    type: 'call:invite',
+    from: 'heather',
+    callId: 'call-voice-answer',
+    kind: 'video',
+    peerName: '@heather',
+  })
+  await manager.acceptAs('voice')
+
+  assert.equal(manager.snapshot().kind, 'voice')
+  assert.equal(sent.find((event) => event.type === 'call:accept')?.kind, 'voice')
+  assert.deepEqual(requested, [{ audio: true, video: false }])
 })
 
 test('answerer ICE failure asks the offerer to restart', async () => {

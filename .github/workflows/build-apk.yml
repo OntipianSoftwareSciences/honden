@@ -90,6 +90,78 @@ jobs:
             exit 1
           fi
 
+      - name: Add Firebase FCM Android config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo 'GOOGLE_SERVICES_JSON secret is missing; add the Firebase config in the GitHub repo secrets.' >&2
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
+
+      - name: Patch generated Android project for native incoming calls
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # Keep the theme Tauri generated for this app instead of guessing its
+          # styled name; the rest of the manifest comes from our template.
+          manifest = Path('src-tauri/gen/android/app/src/main/AndroidManifest.xml')
+          generated = manifest.read_text()
+          template = Path('src-tauri/android/AndroidManifest.xml').read_text()
+          theme = re.search(r'android:theme="@style/([^"]+)"', generated)
+          if theme:
+              template = template.replace(
+                  '@style/Theme.honden', f'@style/{theme.group(1)}', 1
+              )
+          manifest.write_text(template)
+
+          root = Path('src-tauri/gen/android/build.gradle.kts')
+          text = root.read_text()
+          kotlin = re.search(
+              r'^[ \t]*classpath\("org\.jetbrains\.kotlin:kotlin-gradle-plugin:[^"]+"\)[ \t]*$',
+              text,
+              re.M,
+          )
+          if not kotlin:
+              raise SystemExit('root Gradle Kotlin classpath marker not found')
+          insert_at = kotlin.end()
+          text = (
+              text[:insert_at]
+              + '\n        classpath("com.google.gms:google-services:4.6.0")'
+              + text[insert_at:]
+          )
+          root.write_text(text)
+
+          app = Path('src-tauri/gen/android/app/build.gradle.kts')
+          text = app.read_text()
+          plugin_marker = '    id("rust")'
+          if plugin_marker not in text:
+              raise SystemExit('app Gradle rust plugin marker not found')
+          text = text.replace(
+              plugin_marker,
+              plugin_marker + '\n    id("com.google.gms.google-services")',
+              1,
+          )
+          webkit = re.search(
+              r'^[ \t]*implementation\("androidx\.webkit:webkit:[^"]+"\)[ \t]*$',
+              text,
+              re.M,
+          )
+          if not webkit:
+              raise SystemExit('app Gradle dependency marker not found')
+          insert_at = webkit.start()
+          text = (
+              text[:insert_at]
+              + '    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))\n'
+              + '    implementation("com.google.firebase:firebase-messaging")\n'
+              + text[insert_at:]
+          )
+          app.write_text(text)
+          PY
+
       - name: Build ARM64 APK
         run: npx tauri android build --apk --target aarch64
 

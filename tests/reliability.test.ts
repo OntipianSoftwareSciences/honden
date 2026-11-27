@@ -329,7 +329,7 @@ test('pill retries and goes Connected after the server wakes', async () => {
   assert.ok(retried, 'health probe should trigger a retry socket')
   retried.open()
   retried.sendReady()
-  await delay(20)
+  for (let i = 0; i < 20 && statuses.at(-1) !== 'live'; i += 1) await delay(10)
   assert.equal(statuses.at(-1), 'live')
   assert.ok(probes >= 2)
   controller.close()

@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Core window access and Android call/message alerts.",
   "windows": ["main"],
-  "permissions": ["core:default", "notification:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "notification:default",
+    "honden-fcm:default",
+    "deep-link:default"
+  ]
 }

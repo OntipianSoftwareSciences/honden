@@ -132,7 +132,8 @@
   @media (prefers-reduced-motion: reduce) {
     .cute-loader,
     .cute-loader__arc,
-    .cute-loader__face {
+    .cute-loader__face,
+    .typing-indicator span {
       animation: none;
     }
   }

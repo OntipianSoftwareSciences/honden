@@ -24,6 +24,14 @@
   "plugins": {
     "notification": {
       "iconColor": "#FF6B9D"
+    },
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["honden"],
+          "appLink": false
+        }
+      ]
     }
   },
   "bundle": {

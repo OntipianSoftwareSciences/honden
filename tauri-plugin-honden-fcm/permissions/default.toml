@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows the app to read its Firebase Cloud Messaging registration token."
+permissions = ["allow-get-fcm-token"]
