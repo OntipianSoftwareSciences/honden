@@ -10,6 +10,7 @@ import Onboarding from './screens/Onboarding'
 import EmptyChat from './screens/EmptyChat'
 import AddUser from './screens/AddUser'
 import Settings from './screens/Settings'
+import HoneyMoments from './screens/HoneyMoments'
 import { applyTheme, useSettings } from './hooks/useSettings'
 import { useLayoutInfo } from './hooks/useLayoutInfo'
 import { parseDeepLink } from './deepLink'
@@ -96,6 +97,7 @@ import { playNewMessage } from './sounds'
 import type {
   AccountUser,
   ChatMessage,
+  ConnectionDetail,
   ConnectionStatus,
   DeviceSession,
   GifResult,
@@ -497,7 +499,7 @@ function UserChip({
   )
 }
 
-type Screen = 'onboarding' | 'chats' | 'chat' | 'settings' | 'addUser' | 'invite'
+type Screen = 'onboarding' | 'chats' | 'chat' | 'moments' | 'settings' | 'addUser' | 'invite'
 
 const inviteToken =
   typeof window !== 'undefined'
@@ -524,8 +526,10 @@ export default function App() {
   const [activeThreadId, setActiveThreadId] = useState('')
   const [status, setStatus] = useState<ChannelStatus>(getChannelStatus)
   const [connection, setConnection] = useState<ConnectionStatus>('connecting')
+  const [connectionDetail, setConnectionDetail] = useState<ConnectionDetail | undefined>()
   const [call, setCall] = useState<CallSnapshot>(() => callManager.snapshot())
   const [draft, setDraft] = useState('')
+  const [hasNewMoment, setHasNewMoment] = useState(false)
   const [typingByThread, setTypingByThread] = useState<TypingMap>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const composerRef = useRef<HTMLInputElement>(null)
@@ -551,6 +555,8 @@ export default function App() {
   const [modal, setModal] = useState<'profile' | 'security' | null>(null)
   const [offline, setOffline] = useState(false)
   const [notice, setNotice] = useState('')
+  const [callFeelingToast, setCallFeelingToast] = useState('')
+  const callFeelingTimer = useRef<number | undefined>(undefined)
   const offlineTimer = useRef<number | undefined>(undefined)
   const authToken = getSignalToken()
   const [longPressedId, setLongPressedId] = useState('')
@@ -746,6 +752,7 @@ export default function App() {
     const unsubscribe = callManager.subscribe(setCall)
     return () => {
       unsubscribe()
+      window.clearTimeout(callFeelingTimer.current)
       callManager.dispose()
     }
   }, [])
@@ -803,9 +810,13 @@ export default function App() {
   useEffect(() => {
     if (!authToken) return
     const controller = startMessageSocket(authenticatedWs('/ws'), {
-      onStatus: (next) => {
+      onStatus: (next, detail) => {
         setConnection(next)
-        if (next === 'live') void flushOutbox()
+        setConnectionDetail(detail)
+        if (next === 'live') {
+          void flushOutbox()
+          void refreshThreads()
+        }
         if (next === 'disconnected') callManager.notifySignalingClosed()
         // A sleeping Render instance needs an HTTP request to wake up.
         if (next === 'waking' || next === 'unreachable') void wakeServer()
@@ -918,6 +929,18 @@ export default function App() {
             case 'call:retry':
               void callManager.handleRetry(event)
               break
+            case 'call:feeling': {
+              const active = callManager.snapshot()
+              if (active.state !== 'connected' || event.callId !== active.callId) break
+              if (!event.feeling) break
+              const name = active.peerName || (event.from ? `@${event.from}` : 'They')
+              const copy =
+                event.feeling === 'need a hug' ? 'could use a hug' : `feeling ${event.feeling}`
+              setCallFeelingToast(`${name} ${copy}`)
+              window.clearTimeout(callFeelingTimer.current)
+              callFeelingTimer.current = window.setTimeout(() => setCallFeelingToast(''), 4000)
+              break
+            }
             case 'call:hangup':
               callManager.handleHangup(event)
               break
@@ -939,6 +962,23 @@ export default function App() {
       controller.close()
     }
   }, [authToken, identity])
+
+  // The initial /api/chats call can fail while Render is asleep. Retry as soon
+  // as the socket is live so DMs appear without a reload.
+  async function refreshThreads() {
+    try {
+      const chats = await loadChatsFromServer()
+      setThreads((current) => {
+        const byId = new Map(current.map((thread) => [thread.id, thread]))
+        for (const thread of chats) byId.set(thread.id, thread)
+        const merged = [...byId.values()]
+        saveThreads(merged)
+        return merged
+      })
+    } catch {
+      // Keep locally stored threads; the next live connection retries.
+    }
+  }
 
   function retryConnection() {
     void wakeServer()
@@ -1156,6 +1196,11 @@ export default function App() {
     setScreen('chat')
   }
 
+  function openMoments() {
+    setHasNewMoment(false)
+    setScreen('moments')
+  }
+
   async function addByUsername(raw: string, allowSelf = false): Promise<boolean> {
     const username = normalizeUsername(raw)
     if (!username || (!allowSelf && username === ownUsername)) return false
@@ -1198,13 +1243,6 @@ export default function App() {
 
   function startCall(kind: CallKind) {
     void callManager.startOutgoing(activeThreadId, kind, callPeerName(activeThreadId))
-  }
-
-  function callAgain(kind: CallKind) {
-    const peerId = call.peerId || activeThreadId
-    if (!peerId) return
-    const peerName = peerId === activeThreadId ? callPeerName(peerId) : `@${peerId}`
-    void callManager.startOutgoing(peerId, kind, peerName)
   }
 
   function sendTyping(chatId: string, isTyping: boolean) {
@@ -1426,6 +1464,8 @@ export default function App() {
         onLogout={signOut}
       />
     )
+  } else if (screen === 'moments') {
+    screenView = <HoneyMoments onBack={() => setScreen('chats')} />
   } else if (screen === 'chat') {
     const thread =
       activeThreadId === globalThreadId
@@ -1460,6 +1500,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            connectionDetail={connectionDetail}
             loading={chatsLoading}
             onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
@@ -1505,7 +1546,11 @@ export default function App() {
                 </>
               )}
             </div>
-            <ConnectionPill status={connection} onRetry={retryConnection} />
+            <ConnectionPill
+              status={connection}
+              detail={connectionDetail}
+              onRetry={retryConnection}
+            />
             {layout.width < 768 ? (
               <UserAvatarButton
                 user={user}
@@ -1738,6 +1783,17 @@ export default function App() {
               />
               <button
                 type="button"
+                onClick={openMoments}
+                aria-label="Open Honey Moments"
+                className={`honey-activation shrink-0 text-2xl${hasNewMoment ? ' honey-activation--new' : ''}`}
+              >
+                🍯
+                {hasNewMoment && (
+                  <span className="honey-activation__dot" aria-hidden="true" />
+                )}
+              </button>
+              <button
+                type="button"
                 onClick={() => setPickerOpen((open) => !open)}
                 aria-label="Open emoji and GIF picker"
                 className="h-12 w-12 rounded-2xl border border-border bg-white text-lg transition hover:bg-warm-cream"
@@ -1845,6 +1901,7 @@ export default function App() {
             threads={visibleThreads}
             messages={messages}
             connection={connection}
+            connectionDetail={connectionDetail}
             loading={chatsLoading}
             onRetry={retryConnection}
             onOpenSettings={() => setScreen('settings')}
@@ -1911,11 +1968,12 @@ export default function App() {
         onReject={() => callManager.reject()}
         onHangup={() => callManager.hangup()}
         onRetry={() => void callManager.retry()}
-        onStartVoice={() => callAgain('voice')}
-        onStartVideo={() => callAgain('video')}
         onToggleMic={() => callManager.toggleMic()}
         onToggleCamera={() => callManager.toggleCamera()}
         onSwitchCamera={() => void callManager.switchCamera()}
+        onSendFeeling={(feeling) => callManager.sendFeeling(feeling)}
+        onBackToChat={() => callManager.reset()}
+        feelingToast={callFeelingToast}
       />
     </>
   )

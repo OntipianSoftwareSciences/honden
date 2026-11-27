@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Mic, MicOff, Phone, PhoneOff, SwitchCamera, Video, VideoOff } from 'lucide-react'
+import Bork from './Bork'
 import CuteLoader from './CuteLoader'
 import type { CallSnapshot } from '../webrtc/callManager'
 import {
@@ -16,11 +17,19 @@ type Props = {
   onReject: () => void
   onHangup: () => void
   onRetry: () => void
-  onStartVoice: () => void
-  onStartVideo: () => void
   onToggleMic: () => void
   onToggleCamera: () => void
   onSwitchCamera: () => void
+  onSendFeeling: (feeling: string) => void
+  onBackToChat: () => void
+  feelingToast: string
+}
+
+const feelings = ['good :3', 'tired', 'need a hug']
+
+function callLength(ms: number) {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 export default function CallScreens({
@@ -30,15 +39,21 @@ export default function CallScreens({
   onReject,
   onHangup,
   onRetry,
-  onStartVoice,
-  onStartVideo,
   onToggleMic,
   onToggleCamera,
   onSwitchCamera,
+  onSendFeeling,
+  onBackToChat,
+  feelingToast,
 }: Props) {
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const previousState = useRef(snapshot.state)
+  const checkInTimer = useRef<number | undefined>(undefined)
+  const checkInFadeTimer = useRef<number | undefined>(undefined)
+  const [checkInOpen, setCheckInOpen] = useState(false)
+  const [checkInVisible, setCheckInVisible] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     if (remoteVideoRef.current) {
@@ -69,6 +84,41 @@ export default function CallScreens({
     }
     previousState.current = snapshot.state
   }, [snapshot.state])
+
+  useEffect(() => {
+    window.clearTimeout(checkInTimer.current)
+    window.clearTimeout(checkInFadeTimer.current)
+    if (snapshot.state !== 'connected') {
+      setCheckInOpen(false)
+      setCheckInVisible(false)
+      return
+    }
+    setCheckInOpen(true)
+    setCheckInVisible(true)
+    checkInTimer.current = window.setTimeout(() => {
+      setCheckInVisible(false)
+      checkInFadeTimer.current = window.setTimeout(() => setCheckInOpen(false), 350)
+    }, 5000)
+    return () => {
+      window.clearTimeout(checkInTimer.current)
+      window.clearTimeout(checkInFadeTimer.current)
+    }
+  }, [snapshot.state, snapshot.callId])
+
+  useEffect(() => {
+    if (snapshot.state !== 'connected') return
+    setNow(Date.now())
+    const interval = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [snapshot.state, snapshot.callId])
+
+  function sendFeeling(feeling: string) {
+    window.clearTimeout(checkInTimer.current)
+    window.clearTimeout(checkInFadeTimer.current)
+    setCheckInVisible(false)
+    checkInFadeTimer.current = window.setTimeout(() => setCheckInOpen(false), 300)
+    onSendFeeling(feeling)
+  }
 
   const localHasVideo = Boolean(snapshot.localStream?.getVideoTracks().length)
   const remoteHasVideo = Boolean(snapshot.remoteStream?.getVideoTracks().length)
@@ -162,7 +212,44 @@ export default function CallScreens({
               Connected
             </div>
           )}
+          {snapshot.state === 'connected' && snapshot.connectedAt > 0 && (
+            <div className="rounded-xl bg-white px-3 py-1 text-[13px] font-semibold text-warm-charcoal shadow-soft">
+              {callLength(now - snapshot.connectedAt)}
+            </div>
+          )}
         </div>
+
+        {snapshot.state === 'connected' && checkInOpen && (
+          <div
+            className={`call-check-in absolute left-1/2 top-16 z-30 w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 rounded-2xl border border-border bg-white/95 px-4 py-3 text-center shadow-soft ${
+              checkInVisible ? '' : 'call-check-in--hidden'
+            }`}
+          >
+            <div className="flex items-center justify-center gap-2 text-heart-pink">
+              <Bork size={26} />
+              <span className="text-[15px] font-bold">How are you feeling?</span>
+            </div>
+            <div className="mt-2 flex flex-wrap justify-center gap-2">
+              {feelings.map((feeling) => (
+                <button
+                  key={feeling}
+                  type="button"
+                  onClick={() => sendFeeling(feeling)}
+                  className="min-h-11 rounded-xl bg-soft-blush px-3 py-1.5 text-[13px] font-semibold text-pink-ink transition hover:bg-warm-cream"
+                >
+                  {feeling}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {feelingToast && (
+          <div className="pointer-events-none absolute bottom-3 left-1/2 z-40 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-xl bg-white px-4 py-2 text-[13px] font-semibold text-pink-ink shadow-soft">
+            <Bork size={20} />
+            <span>{feelingToast}</span>
+          </div>
+        )}
 
         {(snapshot.state === 'calling' || snapshot.state === 'connecting') && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-warm-cream/90 p-4 text-center">
@@ -202,30 +289,21 @@ export default function CallScreens({
 
         {snapshot.state === 'ended' && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-warm-cream/95 p-4 text-center">
-            <p className="text-lg font-bold text-warm-charcoal">
-              {snapshot.error || 'Call ended'}
+            <Bork size={64} waving />
+            <p className="mt-2 text-xl font-bold text-heart-pink">take care &lt;3</p>
+            <p className="text-[13px] font-semibold text-warm-charcoal">
+              {callLength(snapshot.connectedAt ? Date.now() - snapshot.connectedAt : 0)}
             </p>
-            <p className="text-[13px] text-soft-grey">
-              {snapshot.peerName || snapshot.peerId || 'Contact'}
-            </p>
-            <div className="mt-5 flex gap-3">
-              <button
-                type="button"
-                onClick={onStartVoice}
-                className="flex min-h-12 items-center gap-2 rounded-xl border border-heart-pink bg-white px-5 py-3 text-base font-bold text-heart-pink transition hover:bg-soft-blush"
-              >
-                <Phone size={18} />
-                Voice
-              </button>
-              <button
-                type="button"
-                onClick={onStartVideo}
-                className="flex min-h-12 items-center gap-2 rounded-xl bg-heart-pink px-5 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
-              >
-                <Video size={18} />
-                Video
-              </button>
-            </div>
+            {snapshot.error && (
+              <p className="text-[13px] text-soft-grey">{snapshot.error}</p>
+            )}
+            <button
+              type="button"
+              onClick={onBackToChat}
+              className="mt-5 min-h-12 rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose"
+            >
+              Back to chat
+            </button>
           </div>
         )}
       </div>

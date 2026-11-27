@@ -21,6 +21,7 @@ export type SignalEvent = {
     | 'call:answer'
     | 'call:ice'
     | 'call:retry'
+    | 'call:feeling'
     | 'call:hangup'
   callId?: string
   to?: string
@@ -30,6 +31,7 @@ export type SignalEvent = {
   sdp?: RTCSessionDescriptionInit
   candidate?: RTCIceCandidateInit
   reason?: string
+  feeling?: string
   conversationId?: string
   isTyping?: boolean
   userId?: string

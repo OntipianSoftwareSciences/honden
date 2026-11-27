@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from 'react'
 import ConnectionPill from '../components/ConnectionPill'
 import CuteLoader from '../components/CuteLoader'
-import type { ChatMessage, ConnectionStatus } from '../types'
+import type { ChatMessage, ConnectionDetail, ConnectionStatus } from '../types'
 import type { Thread } from '../store/messages'
 
 type Props = {
   threads: Thread[]
   messages: ChatMessage[]
   connection: ConnectionStatus
+  connectionDetail?: ConnectionDetail
   loading?: boolean
   onRetry: () => void
   onOpenSettings: () => void
@@ -22,6 +23,7 @@ export default function EmptyChat({
   threads,
   messages,
   connection,
+  connectionDetail,
   loading = false,
   onRetry,
   onOpenSettings,
@@ -50,7 +52,7 @@ export default function EmptyChat({
             🍯
           </span>
           <h2 className="readable-text whitespace-nowrap font-bold text-warm-charcoal">HonDen</h2>
-          <ConnectionPill status={connection} onRetry={onRetry} />
+          <ConnectionPill status={connection} detail={connectionDetail} onRetry={onRetry} />
           {headerUserButton}
           {!compact && (
             <button

@@ -24,6 +24,7 @@ export type CallSnapshot = {
   notice: string
   connectDiagnostic: string
   retryAvailable: boolean
+  connectedAt: number
 }
 
 type CallEndReason = 'hung up' | 'ICE disconnected' | 'WebSocket closed' | 'timeout'
@@ -348,6 +349,7 @@ function idleSnapshot(): CallSnapshot {
     notice: '',
     connectDiagnostic: '',
     retryAvailable: false,
+    connectedAt: 0,
   }
 }
 
@@ -396,6 +398,7 @@ class CallManager {
   private candidateTypes: string[] = []
   private connectDiagnostic = ''
   private retryAvailable = false
+  private connectedAt = 0
   private lastPeerId = ''
   private lastKind: CallKind = 'voice'
   private lastPeerName = ''
@@ -444,6 +447,7 @@ class CallManager {
       notice: this.notice,
       connectDiagnostic: this.connectDiagnostic,
       retryAvailable: this.retryAvailable,
+      connectedAt: this.connectedAt,
     }
   }
 
@@ -549,6 +553,7 @@ class CallManager {
     this.notice = this.notice === 'Reconnecting...' ? '' : this.notice
     this.clearDiagnostic()
     this.state = 'connected'
+    this.connectedAt = Date.now()
     this.logCallConnected()
     this.logState('connected')
     console.info('[call] ICE connected diagnostic', {
@@ -671,7 +676,7 @@ class CallManager {
     this.clearDiagnostic()
   }
 
-  private reset() {
+  reset() {
     this.teardown()
     this.state = 'idle'
     this.callId = ''
@@ -683,6 +688,7 @@ class CallManager {
     this.connectedLogged = false
     this.endedLogged = false
     this.signalingClosed = false
+    this.connectedAt = 0
     this.clearDiagnostic()
     this.emit()
   }
@@ -1279,7 +1285,7 @@ class CallManager {
     this.emit()
     window.setTimeout(() => {
       if (this.callId === event.callId) this.reset()
-    }, 1800)
+    }, 3000)
   }
 
   hangup() {
@@ -1293,7 +1299,7 @@ class CallManager {
     this.emit()
     window.setTimeout(() => {
       if (this.callId === callId) this.reset()
-    }, 1800)
+    }, 3000)
   }
 
   private async refreshCameras() {
@@ -1451,6 +1457,18 @@ class CallManager {
 
     await this.refreshCameras()
     this.emit()
+  }
+
+  // Optional call check-in. The phrase goes only to the peer in this call over
+  // the existing ephemeral signaling relay; it is never stored or logged.
+  sendFeeling(feeling: string) {
+    if (this.state !== 'connected' || !this.callId || !this.peerId) return
+    this.emitSignal({
+      type: 'call:feeling',
+      to: this.peerId,
+      callId: this.callId,
+      feeling,
+    })
   }
 
   toggleMic() {

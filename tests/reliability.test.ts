@@ -2,12 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { authenticatedWs } from '../src/api/client'
 import { connectionLabels, wakePillView } from '../src/components/ConnectionPill'
+import type { ConnectionDetail } from '../src/types'
 import { startMessageSocket } from '../src/transport/messageSocket'
 import {
   advanceCursor,
   CONNECT_TIMEOUT_MS,
   HEALTH_POLL_MS,
   isAfterCursor,
+  MAX_CONNECT_RETRIES,
+  RETRY_INTERVAL_MS,
   mergeById,
   reconnectDelay,
   startWakeCountdown,
@@ -21,7 +24,17 @@ test('connection failure surfaces after the 30s wake estimate and health polling
   assert.equal(CONNECT_TIMEOUT_MS, 30000)
   assert.equal(WAKE_ESTIMATE_SECONDS, 30)
   assert.equal(HEALTH_POLL_MS, 5000)
+  assert.equal(RETRY_INTERVAL_MS, 5000)
+  assert.equal(MAX_CONNECT_RETRIES, 6)
   assert.ok(WAKE_INTERVAL_MS > 0 && WAKE_INTERVAL_MS < 15 * 60 * 1000)
+})
+
+test('pill shows live retry count while a stalled handshake keeps retrying', () => {
+  const detail: ConnectionDetail = { attempt: 2, maxAttempts: 6, secondsLeft: 19 }
+  const view = wakePillView('connecting', { secondsLeft: 30, stopped: false }, detail)
+  assert.equal(view.label, 'Connecting... 19s · retry 2/6')
+  assert.equal(view.showCountdown, true)
+  assert.equal(view.showRetry, false)
 })
 
 test('wake countdown starts at 30 and ticks down once per second', () => {
@@ -57,7 +70,7 @@ test('wake pill shows Retry at 0 and never restarts the countdown by itself', ()
   const retry = wakePillView('unreachable', countdown)
   assert.equal(retry.showRetry, true)
   assert.equal(retry.showCountdown, false)
-  assert.equal(retry.label, 'Cannot reach server, tap Retry')
+  assert.equal(retry.label, "Couldn't connect to the honey den. Check your connection and tap Retry.")
   assert.equal(
     wakePillView('connecting', countdown).showRetry,
     true,
@@ -291,11 +304,16 @@ test('pill goes to Cannot reach server after the connect timeout', async () => {
       onFrame: () => undefined,
       onSync: async () => undefined,
     },
-    { connectTimeoutMs: 20, healthPollMs: 1000, probeServer: async () => false },
+    {
+      connectTimeoutMs: 20,
+      retryIntervalMs: 5,
+      healthPollMs: 1000,
+      probeServer: async () => false,
+    },
   )
   await delay(60)
   assert.ok(statuses.includes('unreachable'), `expected unreachable, got ${statuses.join(',')}`)
-  assert.equal(connectionLabels.unreachable, 'Cannot reach server, tap Retry')
+  assert.equal(connectionLabels.unreachable, "Couldn't connect to the honey den. Check your connection and tap Retry.")
   assert.equal(CONNECT_TIMEOUT_MS, 30000)
   controller.close()
   restoreBrowserEnv()
@@ -304,7 +322,6 @@ test('pill goes to Cannot reach server after the connect timeout', async () => {
 test('pill retries and goes Connected after the server wakes', async () => {
   installBrowserEnv()
   const statuses: string[] = []
-  let probes = 0
   const controller = startMessageSocket(
     'wss://honden.onrender.com/ws?token=test',
     {
@@ -312,26 +329,16 @@ test('pill retries and goes Connected after the server wakes', async () => {
       onFrame: () => undefined,
       onSync: async () => undefined,
     },
-    {
-      connectTimeoutMs: 20,
-      healthPollMs: 10,
-      probeServer: async () => {
-        probes += 1
-        return probes >= 2
-      },
-    },
+    { connectTimeoutMs: 100, retryIntervalMs: 20, maxRetries: 6 },
   )
-  await delay(60)
-  assert.ok(statuses.includes('unreachable'))
-  let retried: FakeWebSocket | undefined
-  for (let i = 0; i < 20 && !createdSockets[1]; i += 1) await delay(10)
-  retried = createdSockets[1]
-  assert.ok(retried, 'health probe should trigger a retry socket')
+  await delay(50)
+  assert.ok(statuses.includes('reconnecting'), `expected a retry, got ${statuses.join(',')}`)
+  const retried = createdSockets.at(-1)
+  assert.ok(retried && createdSockets.length >= 2, 'stalled handshake should retry')
   retried.open()
   retried.sendReady()
-  for (let i = 0; i < 20 && statuses.at(-1) !== 'live'; i += 1) await delay(10)
+  for (let i = 0; i < 20 && statuses.at(-1) !== 'live'; i += 1) await delay(5)
   assert.equal(statuses.at(-1), 'live')
-  assert.ok(probes >= 2)
   controller.close()
   restoreBrowserEnv()
 })
@@ -385,6 +392,34 @@ test('online event retries a stuck socket and reports Connected', async () => {
   retried.sendReady()
   await delay(20)
   assert.equal(statuses.at(-1), 'live')
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('stalled handshake retries every 5s, six times, then shows Retry', async () => {
+  installBrowserEnv()
+  const statuses: string[] = []
+  const details: (ConnectionDetail | undefined)[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (status, detail) => {
+        statuses.push(status)
+        details.push(detail)
+      },
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 200, retryIntervalMs: 5, maxRetries: 6 },
+  )
+  await delay(80)
+  assert.equal(createdSockets.length, 7, 'initial socket plus six automatic retries')
+  assert.equal(statuses.at(-1), 'unreachable')
+  assert.ok(details.some((detail) => detail?.attempt === 6), 'retry count must reach 6')
+  assert.equal(
+    connectionLabels.unreachable,
+    "Couldn't connect to the honey den. Check your connection and tap Retry.",
+  )
   controller.close()
   restoreBrowserEnv()
 })

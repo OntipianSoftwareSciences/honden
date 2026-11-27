@@ -7,6 +7,13 @@ export type ConnectionStatus =
   | 'syncing'
   | 'live'
 
+export type ConnectionDetail = {
+  /** Number of automatic retries already made in this wake window. */
+  attempt: number
+  maxAttempts: number
+  secondsLeft: number
+}
+
 export type MessageKind = 'text' | 'gif'
 
 export type ChatMessage = {

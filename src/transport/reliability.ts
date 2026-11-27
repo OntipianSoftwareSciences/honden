@@ -8,6 +8,9 @@ export const RECONNECT_MAX_MS = 30000
 export const CONNECT_TIMEOUT_MS = 30000
 /** While the server is waking, poll /health at this cadence before reconnecting. */
 export const HEALTH_POLL_MS = 5000
+/** Retry a stalled handshake on this cadence; six tries cover the 30s wake window. */
+export const RETRY_INTERVAL_MS = 5000
+export const MAX_CONNECT_RETRIES = 6
 /** Ping Render Free before its 15-minute idle suspend. */
 export const WAKE_INTERVAL_MS = 14 * 60 * 1000
 /** Estimated wake time shown on the connection pill (seconds). */

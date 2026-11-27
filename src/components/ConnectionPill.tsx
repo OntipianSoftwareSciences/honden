@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import CuteLoader from './CuteLoader'
-import type { ConnectionStatus } from '../types'
+import type { ConnectionDetail, ConnectionStatus } from '../types'
 import {
   startWakeCountdown,
   stopWakeCountdown,
@@ -8,13 +8,16 @@ import {
   type WakeCountdown,
 } from '../transport/reliability'
 
+export const connectionErrorLabel =
+  "Couldn't connect to the honey den. Check your connection and tap Retry."
+
 export const connectionLabels: Record<ConnectionStatus, string> = {
   live: 'Connected 🍯',
   connecting: 'Connecting to the honey den…',
   reconnecting: 'Reconnecting…',
   syncing: 'Syncing missed messages…',
   waking: 'Server is waking up…',
-  unreachable: 'Cannot reach server, tap Retry',
+  unreachable: connectionErrorLabel,
   disconnected: 'Disconnected',
 }
 
@@ -26,6 +29,7 @@ function isWakeStatus(status: ConnectionStatus): boolean {
 export function wakePillView(
   status: ConnectionStatus,
   countdown: WakeCountdown,
+  detail?: ConnectionDetail,
 ): { label: string; showCountdown: boolean; showRetry: boolean } {
   const expired =
     countdown.stopped &&
@@ -34,15 +38,17 @@ export function wakePillView(
     status !== 'syncing' &&
     status !== 'disconnected'
   // An early socket failure waits for the countdown to reach 0; no endless loop.
-  const showRetry = (status === 'unreachable' && countdown.stopped) || expired
-  const showCountdown = isWakeStatus(status) && !showRetry && !countdown.stopped
-  return {
-    label: showCountdown
-      ? `${connectionLabels[status]} ${countdown.secondsLeft}s`
-      : connectionLabels[showRetry ? 'unreachable' : status],
-    showCountdown,
-    showRetry,
+  const showRetry = status === 'unreachable' || expired
+  const secondsLeft = detail?.secondsLeft ?? countdown.secondsLeft
+  const counting = detail ? detail.secondsLeft > 0 : !countdown.stopped
+  const showCountdown = isWakeStatus(status) && !showRetry && counting
+  let label = connectionLabels[showRetry ? 'unreachable' : status]
+  if (showCountdown) {
+    label = detail
+      ? `Connecting... ${secondsLeft}s · retry ${detail.attempt}/${detail.maxAttempts}`
+      : `${label} ${secondsLeft}s`
   }
+  return { label, showCountdown, showRetry }
 }
 
 const config: Record<
@@ -88,14 +94,15 @@ const config: Record<
 
 type Props = {
   status: ConnectionStatus
+  detail?: ConnectionDetail
   onRetry?: () => void
 }
 
-export default function ConnectionPill({ status, onRetry }: Props) {
+export default function ConnectionPill({ status, detail, onRetry }: Props) {
   const [countdown, setCountdown] = useState(startWakeCountdown)
   const inWakeRef = useRef(false)
   const expiredRef = useRef(false)
-  const { label, showCountdown, showRetry } = wakePillView(status, countdown)
+  const { label, showCountdown, showRetry } = wakePillView(status, countdown, detail)
   const { dot, className } = config[showRetry ? 'unreachable' : status]
   const pill = `inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${className}`
   const busy = showCountdown || status === 'syncing'
