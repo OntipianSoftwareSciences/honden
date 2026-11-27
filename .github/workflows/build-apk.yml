@@ -116,10 +116,27 @@ jobs:
 
           for text in candidates:
               try:
-                  json.loads(text)
+                  config = json.loads(text)
               except Exception:
                   continue
-              Path('src-tauri/gen/android/app/google-services.json').write_text(text)
+              application_id = json.loads(Path('src-tauri/tauri.conf.json').read_text())['identifier']
+              clients = config.get('client', [])
+              if not clients:
+                  sys.exit('GOOGLE_SERVICES_JSON has no Firebase Android client')
+
+              def package_name(client):
+                  return client.get('client_info', {}).get('android_client_info', {}).get('package_name')
+
+              if not any(package_name(client) == application_id for client in clients):
+                  print(
+                      f'Firebase client package {package_name(clients[0])} does not match '
+                      f'Android applicationId {application_id}; aligning generated config'
+                  )
+                  info = clients[0].setdefault('client_info', {})
+                  info.setdefault('android_client_info', {})['package_name'] = application_id
+              Path('src-tauri/gen/android/app/google-services.json').write_text(
+                  json.dumps(config, indent=2)
+              )
               print('Firebase config validated; wrote google-services.json')
               break
           else:
