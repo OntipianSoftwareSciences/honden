@@ -94,11 +94,40 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
-            echo 'GOOGLE_SERVICES_JSON secret is missing; add the Firebase config in the GitHub repo secrets.' >&2
-            exit 1
-          fi
-          printf '%s' "$GOOGLE_SERVICES_JSON" > src-tauri/gen/android/app/google-services.json
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          raw = os.environ.get('GOOGLE_SERVICES_JSON', '')
+          if not raw.strip():
+              sys.exit('GOOGLE_SERVICES_JSON secret is missing; add the Firebase config in GitHub repo secrets.')
+
+          candidates = [raw]
+          start, end = raw.find('{'), raw.rfind('}')
+          if start >= 0 and end > start:
+              candidates.append(raw[start:end + 1])
+          try:
+              candidates.append(base64.b64decode(raw.strip(), validate=True).decode('utf-8'))
+          except Exception:
+              pass
+
+          for text in candidates:
+              try:
+                  json.loads(text)
+              except Exception:
+                  continue
+              Path('src-tauri/gen/android/app/google-services.json').write_text(text)
+              print('Firebase config validated; wrote google-services.json')
+              break
+          else:
+              sys.exit(
+                  'GOOGLE_SERVICES_JSON is not valid JSON. Re-add the exact raw contents of '
+                  'google-services.json as the GitHub repo secret (no notes, backticks, or redactions).'
+              )
+          PY
 
       - name: Patch generated Android project for native incoming calls
         run: |
