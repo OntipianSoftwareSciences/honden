@@ -180,21 +180,34 @@ export function startMessageSocket(
     }, healthPollMs)
   }
 
+  /**
+   * Detach first, then close with an explicit valid code. Some Android WebViews
+   * throw when close() is called without a code on a pending handshake; letting
+   * that exception escape would abort the retry chain and pin the pill at
+   * retry 0/6. The socket reference is cleared before close either way.
+   */
+  function detachAndClose(current: WebSocket | undefined): void {
+    if (!current) return
+    current.onopen = null
+    current.onmessage = null
+    current.onerror = null
+    current.onclose = null
+    if (current.readyState >= WebSocket.CLOSING) return
+    try {
+      current.close(1000)
+    } catch (error) {
+      console.warn('[ws:diag] socket close failed', error)
+    }
+  }
+
   function markUnreachable(): void {
     if (stopped) return
     clearConnectTimer()
     clearReconnect()
     clearDeadline()
     reportedUnreachable = true
-    const current = socket
+    detachAndClose(socket)
     socket = undefined
-    if (current) {
-      current.onopen = null
-      current.onmessage = null
-      current.onerror = null
-      current.onclose = null
-      if (current.readyState < WebSocket.CLOSING) current.close()
-    }
     setStatus('unreachable')
     startHealthPolling()
   }
@@ -202,12 +215,7 @@ export function startMessageSocket(
   function closeCurrentSocket(): void {
     const current = socket
     socket = undefined
-    if (!current) return
-    current.onopen = null
-    current.onmessage = null
-    current.onerror = null
-    current.onclose = null
-    if (current.readyState < WebSocket.CLOSING) current.close()
+    detachAndClose(current)
   }
 
   function scheduleRetry(immediate = false): void {
@@ -268,8 +276,11 @@ export function startMessageSocket(
     } catch {
       console.warn('[ws] sync failed; retrying connection')
       authReady = false
-      closeCurrentSocket()
-      scheduleRetry()
+      try {
+        closeCurrentSocket()
+      } finally {
+        scheduleRetry()
+      }
       return
     } finally {
       syncing = false
@@ -319,8 +330,11 @@ export function startMessageSocket(
       console.warn('[ws:diag] handshake still pending, retrying', {
         readyState: readyStateName(next.readyState),
       })
-      closeCurrentSocket()
-      scheduleRetry(true)
+      try {
+        closeCurrentSocket()
+      } finally {
+        scheduleRetry(true)
+      }
     }, retryIntervalMs)
 
     next.onopen = () => {
@@ -360,8 +374,11 @@ export function startMessageSocket(
         readyState: readyStateName(next.readyState),
         message: event instanceof Event ? event.type : String(event),
       })
-      closeCurrentSocket()
-      scheduleRetry()
+      try {
+        closeCurrentSocket()
+      } finally {
+        scheduleRetry()
+      }
     }
 
     next.onclose = (event) => {
@@ -445,9 +462,8 @@ export function startMessageSocket(
       clearDeadline()
       clearHealthPolling()
       if (stableTimer) clearTimeout(stableTimer)
-      const current = socket
+      detachAndClose(socket)
       socket = undefined
-      if (current && current.readyState < WebSocket.CLOSING) current.close()
     },
     restart,
     send(frame) {

@@ -37,6 +37,14 @@ test('pill shows live retry count while a stalled handshake keeps retrying', () 
   assert.equal(view.showRetry, false)
 })
 
+test('pill keeps ticking when a stalled handshake sends no fresh detail', () => {
+  const staleDetail: ConnectionDetail = { attempt: 0, maxAttempts: 6, secondsLeft: 30 }
+  const view = wakePillView('connecting', { secondsLeft: 22, stopped: false }, staleDetail)
+  assert.equal(view.label, 'Connecting... 22s · retry 0/6')
+  assert.equal(view.showCountdown, true)
+  assert.equal(view.showRetry, false)
+})
+
 test('wake countdown starts at 30 and ticks down once per second', () => {
   let countdown = startWakeCountdown()
   assert.equal(countdown.secondsLeft, 30)
@@ -146,6 +154,8 @@ class FakeWebSocket {
   static OPEN = 1
   static CLOSING = 2
   static CLOSED = 3
+  static throwOnClose = false
+  static closeCodes: number[] = []
 
   readyState = FakeWebSocket.CONNECTING
   onopen: ((event: FakeSocketEvent) => void) | null = null
@@ -170,8 +180,10 @@ class FakeWebSocket {
     // Heartbeat frames are not needed for these state tests.
   }
 
-  close() {
+  close(code = 1000) {
     if (this.readyState >= FakeWebSocket.CLOSING) return
+    FakeWebSocket.closeCodes.push(code)
+    if (FakeWebSocket.throwOnClose) throw new Error('WebView close failed')
     this.readyState = FakeWebSocket.CLOSED
     this.onclose?.({ code: 1000, reason: '' })
   }
@@ -205,6 +217,8 @@ function fire(store: Map<string, TestListener[]>, type: string) {
 
 function installBrowserEnv(hostname = 'honden.onrender.com', origin = 'https://honden.onrender.com') {
   createdSockets.length = 0
+  FakeWebSocket.throwOnClose = false
+  FakeWebSocket.closeCodes = []
   windowListeners = new Map()
   documentListeners = new Map()
   documentHidden = false
@@ -419,6 +433,33 @@ test('stalled handshake retries every 5s, six times, then shows Retry', async ()
   assert.equal(
     connectionLabels.unreachable,
     "Couldn't connect to the honey den. Check your connection and tap Retry.",
+  )
+  controller.close()
+  restoreBrowserEnv()
+})
+
+test('stalled handshake still retries when Android WebView close() throws', async () => {
+  installBrowserEnv()
+  FakeWebSocket.throwOnClose = true
+  const details: (ConnectionDetail | undefined)[] = []
+  const controller = startMessageSocket(
+    'wss://honden.onrender.com/ws?token=test',
+    {
+      onStatus: (_status, detail) => {
+        details.push(detail)
+      },
+      onFrame: () => undefined,
+      onSync: async () => undefined,
+    },
+    { connectTimeoutMs: 200, retryIntervalMs: 5, maxRetries: 6 },
+  )
+  await delay(80)
+  assert.equal(createdSockets.length, 7, 'a throwing close must not stop the retry chain')
+  assert.ok(details.some((detail) => detail?.attempt === 6), 'retry count must reach 6')
+  assert.ok(FakeWebSocket.closeCodes.length > 0)
+  assert.ok(
+    FakeWebSocket.closeCodes.every((code) => code === 1000),
+    'close uses an explicit valid code for WebViews',
   )
   controller.close()
   restoreBrowserEnv()

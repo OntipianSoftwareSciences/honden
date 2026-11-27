@@ -39,8 +39,13 @@ export function wakePillView(
     status !== 'disconnected'
   // An early socket failure waits for the countdown to reach 0; no endless loop.
   const showRetry = status === 'unreachable' || expired
-  const secondsLeft = detail?.secondsLeft ?? countdown.secondsLeft
-  const counting = detail ? detail.secondsLeft > 0 : !countdown.stopped
+  // The transport only sends a fresh detail when the status changes. Keep the
+  // visible seconds ticking locally so a stalled Android handshake cannot pin
+  // the pill at "30s" forever; never count past a newer detail from the server.
+  const secondsLeft = detail
+    ? Math.min(countdown.secondsLeft, detail.secondsLeft)
+    : countdown.secondsLeft
+  const counting = secondsLeft > 0
   const showCountdown = isWakeStatus(status) && !showRetry && counting
   let label = connectionLabels[showRetry ? 'unreachable' : status]
   if (showCountdown) {
