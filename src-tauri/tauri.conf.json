@@ -22,9 +22,6 @@
     }
   },
   "plugins": {
-    "notification": {
-      "iconColor": "#FF6B9D"
-    },
     "deep-link": {
       "mobile": [
         {

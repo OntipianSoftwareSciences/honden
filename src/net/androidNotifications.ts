@@ -164,6 +164,7 @@ export async function showAndroidCallAlert(
     actionTypeId: CALL_ACTIONS,
     title: `Incoming call from @${sender}`,
     body: kind === 'video' ? 'Video call' : 'Voice call',
+    iconColor: '#FF6B9D',
     ongoing: true,
     autoCancel: false,
     visibility: 1 as Visibility,
@@ -193,6 +194,7 @@ export async function showAndroidMessageAlert(
     channelId: MESSAGE_CHANNEL,
     title: `New message from @${sender}`,
     body: 'New message',
+    iconColor: '#FF6B9D',
     autoCancel: true,
     visibility: 0 as Visibility,
     extra: {
