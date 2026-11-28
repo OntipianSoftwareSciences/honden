@@ -27,6 +27,12 @@ export type PickedMomentFile = {
   size: number
 }
 
+/** Tauri Android WebViews expose Android in the UA; desktop Tauri does not. */
+export function isAndroidRuntime(): boolean {
+  if (!isTauriRuntime() || typeof navigator === 'undefined') return false
+  return /Android/i.test(navigator.userAgent)
+}
+
 export class MomentPickerError extends Error {
   constructor(message: string) {
     super(message)
@@ -58,7 +64,7 @@ export function momentDetailsFrom(file: File, scheme?: string | null): MomentDet
  * Web/desktop callers keep the ordinary HTML file input.
  */
 export async function pickMomentFile(): Promise<PickedMomentFile | null> {
-  if (!isTauriRuntime()) throw new MomentPickerError('Native picker is only available in the Android app')
+  if (!isAndroidRuntime()) throw new MomentPickerError('Native picker is only available in the Android app')
 
   const result = await invoke<MomentPickerResult>('plugin:honden-fcm|pick_moment_media')
   if (result.cancelled) return null

@@ -71,7 +71,7 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
             startActivityForResult(invoke, intent, "onMomentPicked")
         } catch (error: Throwable) {
             pendingMomentInvoke = null
-            resolveMomentError(invoke, "", 0, "unknown", "", error)
+            resolveMomentError(invoke, "", 0L, "unknown", "", error)
         }
     }
 

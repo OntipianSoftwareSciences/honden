@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { isTauriRuntime } from '../api/client'
 import { logToAndroid } from '../net/androidLog'
-import { momentDetail, momentDetailsFrom, pickMomentFile } from '../net/momentPicker'
+import { isAndroidRuntime, momentDetail, momentDetailsFrom, pickMomentFile } from '../net/momentPicker'
 import type { HoneyMoment } from '../types'
 
 type Props = {
@@ -124,7 +123,7 @@ export default function HoneyMoments({
 
   async function chooseMedia() {
     setError('')
-    if (!isTauriRuntime()) {
+    if (!isAndroidRuntime()) {
       fileInputRef.current?.click()
       return
     }
