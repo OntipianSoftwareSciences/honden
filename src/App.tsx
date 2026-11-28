@@ -1333,24 +1333,43 @@ export default function App() {
     void syncMoments()
   }
 
+  async function readFileAsDataUrl(file: File): Promise<string> {
+    const buffer = await file.arrayBuffer()
+    const bytes = new Uint8Array(buffer)
+    let binary = ''
+    const chunk = 0x8000
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+    }
+    const base64 = btoa(binary)
+    const type = file.type || (file.name.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'application/octet-stream')
+    return `data:${type};base64,${base64}`
+  }
+
   async function createMoment(input: { description: string; file: File }): Promise<string | null> {
     const threadId = activeThreadId || globalThreadId
     const description = input.description.trim().slice(0, 200)
-    const isImage = input.file.type.startsWith('image/')
-    const isVideo = input.file.type.startsWith('video/')
+    const fileType = input.file.type || ''
+    const isImage = fileType.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(input.file.name)
+    const isVideo = fileType.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(input.file.name)
     if (!isImage && !isVideo) return 'Choose an image or a video.'
+    if (input.file.size <= 0) return 'Could not read that file. Try a different one.'
     if (isImage && input.file.size > 10 * 1024 * 1024) return 'That image is too big. Images can be up to 10 MB.'
     if (isVideo && input.file.size > 50 * 1024 * 1024) return 'That video is too big. Videos can be up to 50 MB.'
-    if (!description && !input.file) return 'Add a photo, a video, or a description first.'
 
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onerror = () => reject(new Error('read failed'))
-      reader.onload = () => resolve(String(reader.result || ''))
-      reader.readAsDataURL(input.file)
-    }).catch(() => '')
+    let dataUrl = ''
+    try {
+      dataUrl = await readFileAsDataUrl(input.file)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      logToAndroid(`HonDen moment read failed: type=${fileType || 'unknown'} size=${input.file.size} reason=${reason}`)
+      return 'Could not read that file. Try a different one.'
+    }
 
-    if (!dataUrl) return 'Could not read that file. Try a different one.'
+    if (!dataUrl) {
+      logToAndroid(`HonDen moment read failed: type=${fileType || 'unknown'} size=${input.file.size} reason=empty`)
+      return 'Could not read that file. Try a different one.'
+    }
     const payload = JSON.stringify({ v: 1, description, mediaKind: isImage ? 'image' : 'video', mediaDataUrl: dataUrl })
     let text = payload
     if (threadId !== globalThreadId) {

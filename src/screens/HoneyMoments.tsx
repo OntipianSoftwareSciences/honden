@@ -76,10 +76,16 @@ export default function HoneyMoments({
       setFile(null)
       return
     }
-    const isImage = next.type.startsWith('image/')
-    const isVideo = next.type.startsWith('video/')
+    const type = next.type || ''
+    const isImage = type.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(next.name)
+    const isVideo = type.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(next.name)
+    console.info('[moment] picked file', { type: type || 'unknown', size: next.size, kind: isImage ? 'image' : isVideo ? 'video' : 'unknown' })
     if (!isImage && !isVideo) {
       setError('Choose an image or a video.')
+      return
+    }
+    if (next.size <= 0) {
+      setError('Could not read that file. Try a different one.')
       return
     }
     if (isImage && next.size > MAX_IMAGE_BYTES) {
@@ -185,10 +191,10 @@ export default function HoneyMoments({
                 </button>
               )}
             </div>
-            {previewUrl && file?.type.startsWith('image/') && (
+            {previewUrl && file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(file.name)) && (
               <img src={previewUrl} alt="Moment preview" className="mt-3 max-h-72 w-full rounded-2xl object-cover" />
             )}
-            {previewUrl && file?.type.startsWith('video/') && (
+            {previewUrl && file && (file.type.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(file.name)) && (
               <video src={previewUrl} controls className="mt-3 max-h-72 w-full rounded-2xl bg-black" />
             )}
             <label className="mt-3 block">
