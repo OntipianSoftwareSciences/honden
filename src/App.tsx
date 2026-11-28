@@ -620,7 +620,8 @@ export default function App() {
       .catch((error: unknown) => {
         if (!active) return
         if (error instanceof KeyMismatchError) {
-          signOut(error.message)
+          logToAndroid('HonDen identity mismatch during startup load: yes')
+          signOut(error.message, 'identity-load:key-mismatch')
           return
         }
         setNotice(genericKeyError)
@@ -827,7 +828,7 @@ export default function App() {
         `HonDen socket start: authToken present no, at ${new Date().toISOString()}`,
       )
       logToAndroid('HonDen waiting for auth token')
-      signOut('Log in again to reconnect.')
+      signOut('Log in again to reconnect.', 'socket:no-auth-token')
       return
     }
     logToAndroid(
@@ -1173,6 +1174,9 @@ export default function App() {
     token?: string,
     password?: string,
   ) {
+    logToAndroid(
+      `HonDen login success, token present ${token ? 'yes' : 'no'}, at ${new Date().toISOString()}`,
+    )
     clearChatStorage()
     setChatStorageUser(name)
     setThreads([])
@@ -1184,9 +1188,15 @@ export default function App() {
     try {
       loaded = await loadIdentity(name, password)
     } catch (error) {
-      signOut(error instanceof KeyMismatchError ? error.message : genericKeyError)
+      const mismatch = error instanceof KeyMismatchError
+      logToAndroid(`HonDen identity mismatch during login: ${mismatch ? 'yes' : 'no'}`)
+      signOut(
+        mismatch ? error.message : genericKeyError,
+        mismatch ? 'finishLogin:key-mismatch' : 'finishLogin:identity-load-failed',
+      )
       return
     }
+    identityRef.current = loaded.identity
     setIdentity(loaded.identity)
     await publishKey(name, loaded.identity, loaded.fromBackup, loaded.fromPassword)
     await ensureKeyBackup(loaded.identity, password)
@@ -1377,7 +1387,8 @@ export default function App() {
     }
   }
 
-  function signOut(message = '') {
+  function signOut(message = '', source = 'unknown') {
+    logToAndroid(`HonDen signOut called from ${source}`)
     clearChatStorage()
     setChatStorageUser(null)
     setThreads([])
@@ -1394,6 +1405,7 @@ export default function App() {
     ownUsername = fallbackUsername
     setUsername(fallbackUsername)
     setUser({ ...defaultUser, id: fallbackUsername, username: fallbackUsername, displayName: 'You' })
+    identityRef.current = null
     setIdentity(null)
     setNotice(message)
     setModal(null)
@@ -1487,7 +1499,7 @@ export default function App() {
         inviteLink={inviteUrl(invite)}
         onNewInvite={newInvite}
         installPrompt={installPrompt}
-        onLogout={signOut}
+        onLogout={() => signOut('', 'settings:logout')}
       />
     )
   } else if (screen === 'moments') {
@@ -1984,7 +1996,7 @@ export default function App() {
           devices={devices}
           onClose={() => setModal(null)}
           onRevoke={revokeDevice}
-          onSignOut={signOut}
+          onSignOut={() => signOut('', 'security:signout')}
         />
       )}
       <CallScreens
