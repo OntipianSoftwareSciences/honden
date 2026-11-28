@@ -1,0 +1,6 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-app-version"
+description = "Allows the WebView to read the installed app version."
+commands.allow = ["get_app_version"]

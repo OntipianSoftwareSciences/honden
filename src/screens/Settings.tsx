@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
+import { getVersion } from '@tauri-apps/api/app'
 import type { BeforeInstallPromptEvent } from '../hooks/useInstallPrompt'
 import type { Settings, ThemeName, UpdateSetting } from '../hooks/useSettings'
 import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
-import { isTauriRuntime } from '../api/client'
+import { apiUrl, isTauriRuntime } from '../api/client'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
 import { pushSupported, setPushKind, type PushKind } from '../net/push'
@@ -53,6 +54,13 @@ export default function Settings({
   const [copied, setCopied] = useState(false)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const [installHandled, setInstallHandled] = useState(false)
+  const [updateState, setUpdateState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'up-to-date' }
+    | { kind: 'available'; latest: string; apkUrl: string }
+    | { kind: 'error' }
+  >({ kind: 'idle' })
 
   async function changePush(kind: PushKind, enabled: boolean) {
     if (
@@ -117,6 +125,47 @@ export default function Settings({
     } else {
       setShowInstallHelp(true)
     }
+  }
+
+  function compareVersions(a: string, b: string): number {
+    const pa = a.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0)
+    const pb = b.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0)
+    for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+      const da = pa[i] ?? 0
+      const db = pb[i] ?? 0
+      if (da > db) return 1
+      if (da < db) return -1
+    }
+    return 0
+  }
+
+  async function checkForUpdate() {
+    if (!isTauriRuntime()) {
+      window.open('https://honden.onrender.com/download', '_blank', 'noopener,noreferrer')
+      return
+    }
+    setUpdateState({ kind: 'checking' })
+    try {
+      const installed = await getVersion().catch(() => '0.0.0')
+      const response = await fetch(apiUrl('/api/app-version'), { cache: 'no-store' })
+      if (!response.ok) throw new Error('version check failed')
+      const data = (await response.json()) as { version?: unknown; apkUrl?: unknown }
+      const latest = typeof data.version === 'string' ? data.version : ''
+      const apkUrl = typeof data.apkUrl === 'string' ? data.apkUrl : 'https://honden.onrender.com/downloads/honden.apk'
+      if (!latest) throw new Error('missing version')
+      if (compareVersions(latest, installed) > 0) {
+        setUpdateState({ kind: 'available', latest, apkUrl })
+      } else {
+        setUpdateState({ kind: 'up-to-date' })
+      }
+    } catch {
+      setUpdateState({ kind: 'error' })
+    }
+  }
+
+  function downloadUpdate() {
+    if (updateState.kind !== 'available') return
+    window.open(updateState.apkUrl, '_blank', 'noopener,noreferrer')
   }
 
   return (
@@ -188,6 +237,44 @@ export default function Settings({
             <p className="readable-text break-words text-warm-charcoal" data-testid="layout-info">
               {layout.label}
             </p>
+          </section>
+
+          <section className="rounded-2xl border border-border bg-warm-cream p-6">
+            <h2 className="mb-2 text-sm font-bold text-pink-ink">Update App</h2>
+            <p className="mb-4 text-base">
+              {isTauriRuntime()
+                ? 'Check if a newer HonDen version is ready.'
+                : 'Get the latest Android app from the download page.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => void checkForUpdate()}
+              disabled={updateState.kind === 'checking'}
+              className="flex min-h-11 w-full items-center justify-center rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+            >
+              <span className="flex flex-col items-center leading-tight">
+                <span>{updateState.kind === 'checking' ? 'Checking...' : 'Update App'}</span>
+                <span className="text-[13px] font-semibold text-white/90">Check for a new version</span>
+              </span>
+            </button>
+            {updateState.kind === 'up-to-date' && (
+              <p className="mt-3 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">You're up to date.</p>
+            )}
+            {updateState.kind === 'error' && (
+              <p className="mt-3 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">Couldn't check — try again.</p>
+            )}
+            {updateState.kind === 'available' && (
+              <div className="mt-3 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
+                <p className="font-semibold">Update available — v{updateState.latest}</p>
+                <button
+                  type="button"
+                  onClick={downloadUpdate}
+                  className="mt-3 min-h-11 w-full rounded-xl border border-heart-pink bg-white px-4 py-2 text-sm font-bold text-pink-ink hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                >
+                  Download
+                </button>
+              </div>
+            )}
           </section>
 
           {!isTauriRuntime() && (

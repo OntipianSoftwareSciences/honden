@@ -947,7 +947,14 @@ app.get('/downloads/honden.apk', async (_req, res) => {
 })
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, storage: storageSource })
+  res.json({ ok: true, storage: storageSource, version: '0.1.0' })
+})
+
+app.get('/api/app-version', (_req, res) => {
+  res.json({
+    version: '0.1.0',
+    apkUrl: 'https://honden.onrender.com/downloads/honden.apk',
+  })
 })
 
 app.get('/api/chats', (req, res) => {

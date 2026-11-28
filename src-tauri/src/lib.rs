@@ -21,7 +21,7 @@ pub fn run() {
                 _ => PermissionResponse::Default,
             }
         })
-        .invoke_handler(tauri::generate_handler![honden_log])
+        .invoke_handler(tauri::generate_handler![honden_log, get_app_version])
         .run(tauri::generate_context!())
         .expect("error while running HonDen");
 }
@@ -32,4 +32,9 @@ pub fn run() {
 fn honden_log(message: String) {
     log::info!("{message}");
     eprintln!("{message}");
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
 }

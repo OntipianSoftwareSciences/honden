@@ -9,6 +9,7 @@
     "notification:default",
     "honden-fcm:default",
     "deep-link:default",
-    "allow-honden-log"
+    "allow-honden-log",
+    "allow-get-app-version"
   ]
 }
