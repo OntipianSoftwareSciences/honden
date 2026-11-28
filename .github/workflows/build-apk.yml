@@ -90,6 +90,42 @@ jobs:
             exit 1
           fi
 
+      - name: Install honey launcher icons into generated Android project
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          # `tauri android init --ci` copies Tauri's bundled swirl mipmaps into
+          # gen/android. It does not read src-tauri/icons, so overwrite every
+          # launcher density with the honey icons committed in #101.
+          src = Path('src-tauri/icons/android')
+          res = Path('src-tauri/gen/android/app/src/main/res')
+
+          densities = ('mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi')
+          for density in densities:
+              source_dir = src / f'mipmap-{density}'
+              target_dir = res / f'mipmap-{density}'
+              if not source_dir.is_dir():
+                  raise SystemExit(f'missing honey icon directory: {source_dir}')
+              target_dir.mkdir(parents=True, exist_ok=True)
+              for icon in ('ic_launcher.png', 'ic_launcher_round.png', 'ic_launcher_foreground.png'):
+                  source = source_dir / icon
+                  if not source.is_file():
+                      raise SystemExit(f'missing honey icon: {source}')
+                  shutil.copy2(source, target_dir / icon)
+
+          adaptive_source = src / 'mipmap-anydpi-v26/ic_launcher.xml'
+          adaptive_target = res / 'mipmap-anydpi-v26/ic_launcher.xml'
+          adaptive_target.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(adaptive_source, adaptive_target)
+
+          background_source = src / 'values/ic_launcher_background.xml'
+          background_target = res / 'values/ic_launcher_background.xml'
+          background_target.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(background_source, background_target)
+          PY
+
       - name: Add Firebase FCM Android config
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
