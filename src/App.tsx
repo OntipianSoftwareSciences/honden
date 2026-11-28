@@ -809,9 +809,16 @@ export default function App() {
     previousCallStateRef.current = call.state
   }, [call.callId, call.state])
 
+  const authedScreen = screen !== 'onboarding' && screen !== 'invite'
+
   useEffect(() => {
+    if (!authedScreen) return
     if (!authToken) {
-      logToAndroid('HonDen connect skipped: no auth token')
+      // Token missing on an authenticated screen: don't count as a connect retry.
+      // If the user was previously signed in, show login clearly instead of a
+      // fake connection failure.
+      logToAndroid('HonDen waiting for auth token')
+      signOut('Log in again to reconnect.')
       return
     }
     logToAndroid('HonDen socket starting')
@@ -968,7 +975,7 @@ export default function App() {
       socketRef.current = null
       controller.close()
     }
-  }, [authToken, identity])
+  }, [authToken, identity, authedScreen])
 
   // The initial /api/chats call can fail while Render is asleep. Retry as soon
   // as the socket is live so DMs appear without a reload.
