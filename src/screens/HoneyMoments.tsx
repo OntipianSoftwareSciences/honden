@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isTauriRuntime } from '../api/client'
+import { logToAndroid } from '../net/androidLog'
+import { momentDetail, momentDetailsFrom, pickMomentFile } from '../net/momentPicker'
 import type { HoneyMoment } from '../types'
 
 type Props = {
@@ -6,7 +9,7 @@ type Props = {
   moments: HoneyMoment[]
   ownUsername: string
   onBack: () => void
-  onCreate: (input: { description: string; file: File }) => Promise<string | null>
+  onCreate: (input: { description: string; file: File; scheme?: string }) => Promise<string | null>
   onDelete: (id: string) => Promise<void>
   onHeart: (id: string) => void
 }
@@ -50,6 +53,7 @@ export default function HoneyMoments({
   const [creating, setCreating] = useState(false)
   const [description, setDescription] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [scheme, setScheme] = useState('unknown')
   const [previewUrl, setPreviewUrl] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -70,22 +74,26 @@ export default function HoneyMoments({
     [moments],
   )
 
-  async function pickFile(next: File | null) {
+  async function pickFile(next: File | null, sourceScheme = 'unknown') {
     setError('')
     if (!next) {
       setFile(null)
+      setScheme('unknown')
       return
     }
     const type = next.type || ''
+    const info = momentDetailsFrom(next, sourceScheme)
     const isImage = type.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(next.name)
     const isVideo = type.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(next.name)
-    console.info('[moment] picked file', { type: type || 'unknown', size: next.size, kind: isImage ? 'image' : isVideo ? 'video' : 'unknown' })
+    console.info('[moment] picked file', { ...info, kind: isImage ? 'image' : isVideo ? 'video' : 'unknown' })
     if (!isImage && !isVideo) {
-      setError('Choose an image or a video.')
+      setError(`Choose an image or a video. (${momentDetail(info)})`)
       return
     }
     if (next.size <= 0) {
-      setError('Could not read that file. Try a different one.')
+      const detail = momentDetail(info, 'ValidationError: selected file has size 0')
+      logToAndroid(`HonDen moment read failed: ${detail}`)
+      setError(`Could not read that file (${detail}). Try a different one.`)
       return
     }
     if (isImage && next.size > MAX_IMAGE_BYTES) {
@@ -103,12 +111,32 @@ export default function HoneyMoments({
           setError('That video is too long. Videos can be up to 30 seconds.')
           return
         }
-      } catch {
-        setError('Could not read that video. Try a different one.')
+      } catch (error) {
+        const detail = momentDetail(info, error)
+        logToAndroid(`HonDen moment read failed: ${detail}`)
+        setError(`Could not read that video (${detail}). Try a different one.`)
         return
       }
     }
     setFile(next)
+    setScheme(sourceScheme)
+  }
+
+  async function chooseMedia() {
+    setError('')
+    if (!isTauriRuntime()) {
+      fileInputRef.current?.click()
+      return
+    }
+    try {
+      const picked = await pickMomentFile()
+      if (!picked) return
+      await pickFile(picked.file, picked.scheme)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : momentDetail({ type: '', size: 0, scheme: 'unknown' }, error)
+      logToAndroid(`HonDen moment picker failed: ${detail}`)
+      setError(`Could not read that file (${detail}). Try a different one.`)
+    }
   }
 
   async function submit() {
@@ -127,7 +155,7 @@ export default function HoneyMoments({
     }
     setBusy(true)
     setError('')
-    const postError = await onCreate({ description: text, file })
+    const postError = await onCreate({ description: text, file, scheme })
     setBusy(false)
     if (postError) {
       setError(postError)
@@ -176,7 +204,7 @@ export default function HoneyMoments({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => void chooseMedia()}
                 className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-warm-charcoal hover:bg-soft-blush"
               >
                 {file ? 'Change photo/video' : 'Add photo/video'}
@@ -184,7 +212,7 @@ export default function HoneyMoments({
               {file && (
                 <button
                   type="button"
-                  onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = '' }}
+                  onClick={() => { setFile(null); setScheme('unknown'); if (fileInputRef.current) fileInputRef.current.value = '' }}
                   className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-soft-grey hover:bg-soft-blush"
                 >
                   Remove

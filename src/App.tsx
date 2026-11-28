@@ -33,6 +33,7 @@ import {
 import { currentInvite, inviteUrl, relayUrl, rotateInvite } from './net/invite'
 import type { Invite } from './net/invite'
 import { logToAndroid } from './net/androidLog'
+import { momentDetail, momentDetailsFrom } from './net/momentPicker'
 import {
   connectRelay,
   disconnectRelay,
@@ -1346,14 +1347,20 @@ export default function App() {
     return `data:${type};base64,${base64}`
   }
 
-  async function createMoment(input: { description: string; file: File }): Promise<string | null> {
+  async function createMoment(input: { description: string; file: File; scheme?: string }): Promise<string | null> {
     const threadId = activeThreadId || globalThreadId
     const description = input.description.trim().slice(0, 200)
     const fileType = input.file.type || ''
+    const info = momentDetailsFrom(input.file, input.scheme)
+    const detail = (error?: unknown) => momentDetail(info, error)
     const isImage = fileType.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(input.file.name)
     const isVideo = fileType.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(input.file.name)
-    if (!isImage && !isVideo) return 'Choose an image or a video.'
-    if (input.file.size <= 0) return 'Could not read that file. Try a different one.'
+    if (!isImage && !isVideo) return `Choose an image or a video. (${detail()})`
+    if (input.file.size <= 0) {
+      const reason = detail('ValidationError: size is 0')
+      logToAndroid(`HonDen moment read failed: ${reason}`)
+      return `Could not read that file (${reason}). Try a different one.`
+    }
     if (isImage && input.file.size > 10 * 1024 * 1024) return 'That image is too big. Images can be up to 10 MB.'
     if (isVideo && input.file.size > 50 * 1024 * 1024) return 'That video is too big. Videos can be up to 50 MB.'
 
@@ -1361,14 +1368,15 @@ export default function App() {
     try {
       dataUrl = await readFileAsDataUrl(input.file)
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      logToAndroid(`HonDen moment read failed: type=${fileType || 'unknown'} size=${input.file.size} reason=${reason}`)
-      return 'Could not read that file. Try a different one.'
+      const reason = detail(error)
+      logToAndroid(`HonDen moment read failed: ${reason}`)
+      return `Could not read that file (${reason}). Try a different one.`
     }
 
     if (!dataUrl) {
-      logToAndroid(`HonDen moment read failed: type=${fileType || 'unknown'} size=${input.file.size} reason=empty`)
-      return 'Could not read that file. Try a different one.'
+      const reason = detail('TypeError: empty data URL')
+      logToAndroid(`HonDen moment read failed: ${reason}`)
+      return `Could not read that file (${reason}). Try a different one.`
     }
     const payload = JSON.stringify({ v: 1, description, mediaKind: isImage ? 'image' : 'video', mediaDataUrl: dataUrl })
     let text = payload
