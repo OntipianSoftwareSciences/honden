@@ -810,7 +810,11 @@ export default function App() {
   }, [call.callId, call.state])
 
   useEffect(() => {
-    if (!authToken) return
+    if (!authToken) {
+      logToAndroid('HonDen connect skipped: no auth token')
+      return
+    }
+    logToAndroid('HonDen socket starting')
     const controller = startMessageSocket(authenticatedWs('/ws'), {
       onStatus: (next, detail) => {
         setConnection(next)

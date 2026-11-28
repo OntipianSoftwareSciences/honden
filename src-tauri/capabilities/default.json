@@ -8,6 +8,7 @@
     "core:event:default",
     "notification:default",
     "honden-fcm:default",
-    "deep-link:default"
+    "deep-link:default",
+    "allow-honden-log"
   ]
 }

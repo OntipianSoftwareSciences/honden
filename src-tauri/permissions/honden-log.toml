@@ -1,0 +1,6 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-honden-log"
+description = "Allows the WebView to forward diagnostic lines to the native logger."
+commands.allow = ["honden_log"]

@@ -8,6 +8,7 @@ pub fn run() {
     );
     #[cfg(target_os = "android")]
     log::set_max_level(log::LevelFilter::Trace);
+    log::info!("HonDen native logger ready");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
