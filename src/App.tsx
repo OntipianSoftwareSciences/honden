@@ -1058,10 +1058,22 @@ export default function App() {
         params.set('afterTime', cursor.time)
         params.set('afterId', cursor.id)
       }
-      const response = await fetch(apiUrl(`/api/messages?${params.toString()}`), {
-        headers: authHeaders(),
-      })
-      if (!response.ok) throw new Error(`sync failed: ${response.status}`)
+      const url = apiUrl(`/api/messages?${params.toString()}`)
+      let response: Response
+      try {
+        response = await fetch(url, {
+          headers: authHeaders(),
+        })
+      } catch (error) {
+        const type = error instanceof Error ? error.name : typeof error
+        const msg = error instanceof Error ? error.message : String(error)
+        logToAndroid(`HonDen sync fetch failed: ${type} ${msg}; url ${url}`)
+        throw error
+      }
+      if (!response.ok) {
+        logToAndroid(`HonDen sync http error: status ${response.status}; url ${url}`)
+        throw new Error(`sync failed: ${response.status}`)
+      }
       const items = (await response.json()) as WireMessage[]
       if (!Array.isArray(items)) throw new Error('sync returned invalid data')
       collected.push(...items)
