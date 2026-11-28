@@ -152,18 +152,18 @@ export default function ConnectionPill({ status, detail, onRetry }: Props) {
 
   if (showRetry) {
     return (
-      <span role="alert" aria-live="assertive" className={`${pill} flex-wrap`}>
-        {marker}
-        <span>{label}</span>
-        {onRetry && (
-          <button
-            type="button"
-            onClick={handleRetry}
-            className="ml-0.5 rounded-full border border-soft-red/40 px-2 py-0.5 text-[10px] font-bold hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
-          >
-            Retry
-          </button>
-        )}
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span role="alert" aria-live="assertive" className={pill}>
+          {marker}
+          <span>{label}</span>
+        </span>
+        <button
+          type="button"
+          onClick={handleRetry}
+          className="min-h-11 shrink-0 rounded-full border border-soft-red/40 bg-white px-4 py-2 text-sm font-bold text-soft-red hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+        >
+          Retry
+        </button>
       </span>
     )
   }
