@@ -851,6 +851,9 @@ export default function App() {
       onStatus: (next, detail) => {
         setConnection(next)
         setConnectionDetail(detail)
+        if (next === 'connecting' || next === 'reconnecting' || next === 'syncing' || next === 'live') {
+          clearOffline()
+        }
         if (next === 'live') {
           void flushOutbox()
           void refreshThreads()

@@ -316,10 +316,12 @@ export function startMessageSocket(
     syncing = true
     setStatus('syncing')
     console.info('[ws] auth confirmed; sync start')
+    emitLog('HonDen sync start')
     try {
       await handlers.onSync()
-    } catch {
+    } catch (error) {
       console.warn('[ws] sync failed; retrying connection')
+      emitLog(`HonDen sync failed: ${safeErrorText(error)}`)
       authReady = false
       try {
         closeCurrentSocket()
@@ -338,6 +340,7 @@ export function startMessageSocket(
     clearReconnect()
     clearHealthPolling()
     console.info('[ws:diag] sync complete; connection ready')
+    emitLog('HonDen sync complete; connection live')
     setStatus('live')
     if (stableTimer) clearTimeout(stableTimer)
     stableTimer = setTimeout(() => {
@@ -408,6 +411,7 @@ export function startMessageSocket(
       }
       if (frame.type === 'ready' && typeof frame.userId === 'string') {
         console.info('[ws:diag] ready frame received')
+        emitLog('HonDen ready frame received')
         if (!authReady) {
           authReady = true
           void runSync()
