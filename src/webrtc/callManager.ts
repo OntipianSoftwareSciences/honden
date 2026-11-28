@@ -86,6 +86,9 @@ const plainErrorNames: Record<string, string> = {
   VersionError: 'incompatible version',
 }
 
+const permissionDeniedMessage =
+  'Camera / microphone is off — allow it in Settings to call'
+
 function errorDetails(error: unknown): { name: string; message: string } {
   if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
     return { name: error.name || 'DOMException', message: error.message }
@@ -112,6 +115,7 @@ function callErrorText(stage: CallStage, error: unknown): string {
   // Log only the error name. Never log error messages, SDP, or chat content.
   console.warn(`[call] ${stage} failed: ${name}`)
   if (message === micMissingMessage) return micMissingMessage
+  if (name === 'NotAllowedError' || name === 'SecurityError') return permissionDeniedMessage
   const plain = plainErrorNames[name] ?? 'unexpected error'
   return `${stageCopy[stage]} — ${name} (${plain}): ${message || 'no message provided'}`
 }

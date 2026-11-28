@@ -14,6 +14,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_honden_fcm::init())
         .plugin(tauri_plugin_deep_link::init())
+        .on_permission_request(|_, kind| {
+            use tauri::webview::{PermissionKind, PermissionResponse};
+            match kind {
+                PermissionKind::Camera | PermissionKind::Microphone => PermissionResponse::Allow,
+                _ => PermissionResponse::Default,
+            }
+        })
         .invoke_handler(tauri::generate_handler![honden_log])
         .run(tauri::generate_context!())
         .expect("error while running HonDen");
