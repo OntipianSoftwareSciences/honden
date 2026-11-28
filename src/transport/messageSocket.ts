@@ -196,6 +196,7 @@ export function startMessageSocket(
       intervalMs: healthPollMs,
       url: redactUrl(currentUrl),
     })
+    emitLog(`HonDen health polling started every ${healthPollMs}ms`)
     healthTimer = setInterval(() => {
       if (stopped || probing) return
       probing = true
@@ -203,12 +204,20 @@ export function startMessageSocket(
         .then((awake) => {
           if (stopped) return
           console.info('[ws:diag] health poll result', { awake })
+          emitLog(`HonDen health poll: server awake ${awake ? 'yes' : 'no'}`)
           if (!awake) return
           clearHealthPolling()
-          restart()
+          // Server is awake but socket may still be stuck. Don't reset retry
+          // counters/deadline - that hides failures and pins the UI. Just nudge
+          // a fresh socket if we aren't already connected/connecting.
+          if (authReady && socket?.readyState === WebSocket.OPEN) return
+          if (socket?.readyState === WebSocket.CONNECTING) return
+          emitLog('HonDen health poll: server awake, forcing fresh socket')
+          forceFreshSocket()
         })
         .catch((error: unknown) => {
           console.warn('[ws:diag] health poll failed', error)
+          emitLog('HonDen health poll: probe failed')
         })
         .finally(() => {
           probing = false
@@ -377,6 +386,7 @@ export function startMessageSocket(
     }, retryIntervalMs)
 
     next.onopen = () => {
+      emitLog('HonDen socket open')
       console.info('[ws:diag] socket open', { url: redactUrl(currentUrl) })
       if (stopped || socket !== next) return
       lastFrameAt = Date.now()
@@ -409,10 +419,12 @@ export function startMessageSocket(
 
     next.onerror = (event) => {
       if (stopped || socket !== next) return
-      logFailure(event instanceof Event ? event.type : String(event))
+      const message = event instanceof Event ? event.type : String(event)
+      logFailure(message)
+      emitLog(`HonDen socket error: ${safeErrorText(message)}`)
       console.warn('[ws:diag] socket error', {
         readyState: readyStateName(next.readyState),
-        message: event instanceof Event ? event.type : String(event),
+        message,
       })
       try {
         closeCurrentSocket()
@@ -422,15 +434,15 @@ export function startMessageSocket(
     }
 
     next.onclose = (event) => {
+      const reason = event.reason ? `: ${safeErrorText(event.reason)}` : ''
+      emitLog(`HonDen socket closed: code ${event.code}${reason}`)
       console.warn('[ws:diag] socket closed', {
         code: event.code,
         reason: event.reason,
         readyState: readyStateName(next.readyState),
       })
       if (socket !== next) return
-      logFailure(
-        `socket closed code ${event.code}${event.reason ? `: ${event.reason}` : ''}`,
-      )
+      logFailure(`socket closed code ${event.code}${reason}`)
       socket = undefined
       clearHeartbeat()
       if (stopped) return
