@@ -567,6 +567,12 @@ export default function App() {
   const installPrompt = useInstallPrompt()
   const activeTypingLabel = typingLabel(typingByThread[activeThreadId] ?? [])
 
+  useEffect(() => {
+    logToAndroid(
+      `HonDen auth token loaded: ${authToken ? 'yes' : 'no'}, at ${new Date().toISOString()}`,
+    )
+  }, [authToken])
+
   function scheduleOffline() {
     if (offlineTimer.current !== undefined) return
     offlineTimer.current = window.setTimeout(() => {
@@ -817,10 +823,16 @@ export default function App() {
       // Token missing on an authenticated screen: don't count as a connect retry.
       // If the user was previously signed in, show login clearly instead of a
       // fake connection failure.
+      logToAndroid(
+        `HonDen socket start: authToken present no, at ${new Date().toISOString()}`,
+      )
       logToAndroid('HonDen waiting for auth token')
       signOut('Log in again to reconnect.')
       return
     }
+    logToAndroid(
+      `HonDen socket start: authToken present yes, at ${new Date().toISOString()}`,
+    )
     logToAndroid('HonDen socket starting')
     const controller = startMessageSocket(authenticatedWs('/ws'), {
       onStatus: (next, detail) => {
