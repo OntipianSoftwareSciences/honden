@@ -102,6 +102,7 @@ import type {
   ConnectionStatus,
   DeviceSession,
   GifResult,
+  HoneyMoment,
   ProfilePatch,
 } from './types'
 
@@ -230,6 +231,38 @@ async function toChatMessage(message: WireMessage, identity: Identity | null): P
     time: formatTime(timestamp),
     timestamp,
     text,
+  }
+}
+
+type WireMoment = { id: string; chatId: string; sender: string; text: string; time: string }
+
+async function toHoneyMoment(message: WireMoment, identity: Identity | null): Promise<HoneyMoment | null> {
+  const sender = normalizeUsername(message.sender)
+  let activeIdentity = identity
+  if (!activeIdentity && message.chatId !== globalThreadId && looksEncrypted(message.text)) {
+    const loaded = await loadIdentity(ownUsername).catch(() => null)
+    activeIdentity = loaded?.identity ?? null
+  }
+  const text = await decryptWireText(message.text, activeIdentity, sender, message.chatId)
+  try {
+    const parsed = JSON.parse(text) as { v?: number; description?: unknown; mediaKind?: unknown; mediaDataUrl?: unknown }
+    if (parsed.v !== 1) return null
+    const mediaKind = parsed.mediaKind === 'image' || parsed.mediaKind === 'video' ? parsed.mediaKind : null
+    const mediaDataUrl = typeof parsed.mediaDataUrl === 'string' ? parsed.mediaDataUrl : ''
+    const description = typeof parsed.description === 'string' ? parsed.description.slice(0, 200) : ''
+    if (!mediaKind || !mediaDataUrl) return null
+    return {
+      id: message.id,
+      threadId: message.chatId,
+      sender,
+      createdAt: message.time,
+      description,
+      mediaKind,
+      mediaDataUrl,
+      heartedByMe: false,
+    }
+  } catch {
+    return null
   }
 }
 
@@ -540,6 +573,8 @@ export default function App() {
   const [call, setCall] = useState<CallSnapshot>(() => callManager.snapshot())
   const [draft, setDraft] = useState('')
   const [hasNewMoment, setHasNewMoment] = useState(false)
+  const [moments, setMoments] = useState<HoneyMoment[]>([])
+  const [, setHeartedMomentIds] = useState<Set<string>>(() => new Set())
   const [typingByThread, setTypingByThread] = useState<TypingMap>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const composerRef = useRef<HTMLInputElement>(null)
@@ -933,6 +968,22 @@ export default function App() {
         if (frame.type === 'delete' && frame.id) {
           setMessages((current) => current.filter((item) => item.id !== frame.id))
         }
+        if (frame.type === 'moment' && frame.moment) {
+          const wire = frame.moment as WireMoment
+          void toHoneyMoment(wire, identityRef.current).then((moment) => {
+            if (!moment) return
+            setMoments((current) => {
+              moment.heartedByMe = current.some((item) => item.id === moment.id && item.heartedByMe)
+              return [...current.filter((item) => item.id !== moment.id), moment].sort(
+                (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+              )
+            })
+            if (moment.sender !== ownUsername && screen !== 'moments') setHasNewMoment(true)
+          })
+        }
+        if (frame.type === 'moment-delete' && typeof frame.id === 'string') {
+          setMoments((current) => current.filter((item) => item.id !== frame.id))
+        }
         if (typeof frame.type === 'string' && frame.type.startsWith('call:')) {
           const event = frame as unknown as SignalEvent
           switch (event.type) {
@@ -1086,7 +1137,24 @@ export default function App() {
     )
     setMessages((current) => mergeChatMessages(current, decrypted))
     if (cursor) syncCursorRef.current = cursor
+    await syncMoments()
     clearOffline()
+  }
+
+  async function syncMoments() {
+    const threadId = activeThreadId || globalThreadId
+    const url = apiUrl(`/api/moments?chatId=${encodeURIComponent(threadId)}`)
+    const response = await fetch(url, { headers: authHeaders() })
+    if (!response.ok) return
+    const items = (await response.json()) as Array<{ id: string; chatId: string; sender: string; text: string; time: string }>
+    if (!Array.isArray(items)) return
+    const parsed = await Promise.all(items.map((item) => toHoneyMoment(item, identityRef.current)))
+    setMoments((current) => {
+      const others = current.filter((m) => m.threadId !== threadId)
+      return [...others, ...parsed.filter(Boolean) as HoneyMoment[]].sort(
+        (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+      )
+    })
   }
 
   async function deliverMessage(queued: OutboxMessage): Promise<boolean> {
@@ -1262,6 +1330,67 @@ export default function App() {
   function openMoments() {
     setHasNewMoment(false)
     setScreen('moments')
+    void syncMoments()
+  }
+
+  async function createMoment(input: { description: string; file: File }): Promise<string | null> {
+    const threadId = activeThreadId || globalThreadId
+    const description = input.description.trim().slice(0, 200)
+    const isImage = input.file.type.startsWith('image/')
+    const isVideo = input.file.type.startsWith('video/')
+    if (!isImage && !isVideo) return 'Choose an image or a video.'
+    if (isImage && input.file.size > 10 * 1024 * 1024) return 'That image is too big. Images can be up to 10 MB.'
+    if (isVideo && input.file.size > 50 * 1024 * 1024) return 'That video is too big. Videos can be up to 50 MB.'
+    if (!description && !input.file) return 'Add a photo, a video, or a description first.'
+
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(new Error('read failed'))
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.readAsDataURL(input.file)
+    }).catch(() => '')
+
+    if (!dataUrl) return 'Could not read that file. Try a different one.'
+    const payload = JSON.stringify({ v: 1, description, mediaKind: isImage ? 'image' : 'video', mediaDataUrl: dataUrl })
+    let text = payload
+    if (threadId !== globalThreadId) {
+      const current = identityRef.current ?? (await loadIdentity(ownUsername).catch(() => null))?.identity ?? null
+      if (current) {
+        identityRef.current = current
+        const key = await sharedKey(current, threadId)
+        if (key) text = JSON.stringify(await encryptText(payload, key))
+      }
+    }
+    const response = await fetch(apiUrl('/api/moments'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ chatId: threadId, text }),
+    })
+    if (!response.ok) return 'Could not post that moment. Try again.'
+    const saved = (await response.json()) as WireMoment
+    const moment = await toHoneyMoment(saved, identityRef.current)
+    if (moment) {
+      setMoments((current) => [...current.filter((m) => m.id !== moment.id), moment].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
+    }
+    return null
+  }
+
+  async function deleteMoment(id: string) {
+    await fetch(apiUrl(`/api/moments/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }).catch(() => undefined)
+    setMoments((current) => current.filter((m) => m.id !== id))
+  }
+
+  function heartMoment(id: string) {
+    setHeartedMomentIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    setMoments((current) => current.map((m) => m.id === id ? { ...m, heartedByMe: !m.heartedByMe } : m))
   }
 
   async function addByUsername(raw: string, allowSelf = false): Promise<boolean> {
@@ -1530,7 +1659,19 @@ export default function App() {
       />
     )
   } else if (screen === 'moments') {
-    screenView = <HoneyMoments onBack={() => setScreen('chats')} />
+    const threadId = activeThreadId || globalThreadId
+    const threadName = threadId === globalThreadId ? '#honey-den' : `@${threadId}`
+    screenView = (
+      <HoneyMoments
+        threadName={threadName}
+        moments={moments.filter((m) => m.threadId === threadId)}
+        ownUsername={ownUsername}
+        onBack={() => setScreen('chats')}
+        onCreate={createMoment}
+        onDelete={deleteMoment}
+        onHeart={heartMoment}
+      />
+    )
   } else if (screen === 'chat') {
     const thread =
       activeThreadId === globalThreadId
@@ -1572,6 +1713,8 @@ export default function App() {
             onOpenThread={openThread}
             onNewThread={newThread}
             onAddUser={() => setScreen('addUser')}
+            onOpenMoments={openMoments}
+            hasNewMoment={hasNewMoment}
           />
         </aside>
         <div className="chat-layout__chat flex min-w-0 flex-col">

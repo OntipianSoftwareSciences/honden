@@ -17,6 +17,7 @@ import {
   isValidChatId,
   isValidMessageId,
   isValidMessageText,
+  isValidMomentText,
   issueToken,
   verifyToken,
   type Cursor,
@@ -27,6 +28,14 @@ type StoredMessage = {
   chatId: string
   sender: string
   recipient: string | null
+  text: string
+  time: string
+}
+
+type StoredMoment = {
+  id: string
+  chatId: string
+  sender: string
   text: string
   time: string
 }
@@ -165,6 +174,7 @@ function parseJwk(value: unknown): Record<string, unknown> | null {
 }
 
 let messages: StoredMessage[] = []
+let moments: StoredMoment[] = []
 let users: StoredUser[] = []
 let pool: Pool | null = null
 let sessionSecret = ''
@@ -260,6 +270,18 @@ async function loadFromPostgres(activePool: Pool): Promise<void> {
       time: String(row.time),
     }
   })
+
+  const momentRows = await activePool.query(
+    `SELECT id, chat_id, sender, text, time
+     FROM moments ORDER BY time ASC, id ASC`,
+  )
+  moments = momentRows.rows.map((row) => ({
+    id: String(row.id),
+    chatId: String(row.chat_id),
+    sender: String(row.sender),
+    text: String(row.text),
+    time: String(row.time),
+  }))
 }
 
 function queuePostgresWrite<T>(write: () => Promise<T>): Promise<T> {
@@ -298,6 +320,15 @@ async function initStorage(): Promise<void> {
       `)
     await activePool.query(`
         CREATE TABLE IF NOT EXISTS messages (
+          id text PRIMARY KEY,
+          chat_id text NOT NULL,
+          sender text NOT NULL,
+          text text NOT NULL,
+          time text NOT NULL
+        )
+      `)
+    await activePool.query(`
+        CREATE TABLE IF NOT EXISTS moments (
           id text PRIMARY KEY,
           chat_id text NOT NULL,
           sender text NOT NULL,
@@ -367,7 +398,9 @@ async function initStorage(): Promise<void> {
     await migrateJsonToPostgres(activePool)
     pool = activePool
     await loadFromPostgres(activePool)
-    console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`)
+    console.log(
+      `Loaded ${users.length} users, ${messages.length} messages, ${moments.length} moments from ${storageSource}`,
+    )
   } catch (error) {
     void activePool.end().catch(() => undefined)
     pool = null
@@ -507,7 +540,7 @@ app.use((req, res, next) => {
   next()
 })
 
-app.use(express.json())
+app.use(express.json({ limit: '80mb' }))
 
 app.post('/api/accounts', async (req, res) => {
   const username = cleanUsername((req.body as { username?: unknown } | undefined)?.username)
@@ -1067,6 +1100,128 @@ app.delete('/api/messages/:id', async (req, res) => {
   }
 })
 
+function isValidMomentPayload(value: unknown): value is { chatId: string; text: string; id?: string } {
+  if (!value || typeof value !== 'object') return false
+  const body = value as { chatId?: unknown; text?: unknown }
+  return isValidChatId(body.chatId, globalThreadId) && isValidMomentText(body.text)
+}
+
+function insertMoment(moment: StoredMoment): Promise<boolean> {
+  const activePool = pool
+  if (!activePool) throw new Error('Postgres storage is not available')
+  return queuePostgresWrite(async () => {
+    const result = await activePool.query(
+      `INSERT INTO moments (id, chat_id, sender, text, time)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING`,
+      [moment.id, moment.chatId, moment.sender, moment.text, moment.time],
+    )
+    return (result.rowCount ?? 0) > 0
+  })
+}
+
+function deletePersistedMoment(id: string, sender: string): Promise<boolean> {
+  const activePool = pool
+  if (!activePool) throw new Error('Postgres storage is not available')
+  return queuePostgresWrite(async () => {
+    const result = await activePool.query(
+      'DELETE FROM moments WHERE id = $1 AND sender = $2',
+      [id, sender],
+    )
+    return (result.rowCount ?? 0) > 0
+  })
+}
+
+app.get('/api/moments', (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const requestedChatId = req.query.chatId
+  if (typeof requestedChatId !== 'string' || !isValidChatId(requestedChatId, globalThreadId)) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  const visible = moments
+    .filter((moment) => moment.chatId === requestedChatId)
+    .filter((moment) => {
+      if (moment.chatId === globalThreadId) return true
+      return canAccessConversation(moment.sender, moment.chatId, viewer)
+    })
+    .sort((a, b) => b.time.localeCompare(a.time) || b.id.localeCompare(a.id))
+  res.json(visible.slice(0, 100))
+})
+
+app.post('/api/moments', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const body = req.body as { id?: unknown; chatId?: unknown; text?: unknown } | undefined
+  if (!isValidMomentPayload(body)) {
+    res.status(400).json({ error: errorCopy })
+    return
+  }
+  if (body.chatId !== globalThreadId && body.chatId !== viewer && !users.some((u) => u.username === body.chatId)) {
+    res.status(403).json({ error: errorCopy })
+    return
+  }
+  const id = typeof body.id === 'string' && isValidMessageId(body.id) ? body.id : randomUUID()
+  const moment: StoredMoment = {
+    id,
+    chatId: body.chatId,
+    sender: viewer,
+    text: body.text.trim(),
+    time: new Date().toISOString(),
+  }
+  try {
+    const inserted = await insertMoment(moment)
+    if (!inserted) {
+      const existing = moments.find((item) => item.id === id)
+      res.status(200).json(existing ?? moment)
+      return
+    }
+    moments.push(moment)
+    broadcastMoment(moment)
+    res.status(201).json(moment)
+  } catch (error) {
+    console.error('[moment] persistence failed', error instanceof Error ? error.message : 'unknown')
+    res.status(503).json({ error: errorCopy })
+  }
+})
+
+app.delete('/api/moments/:id', async (req, res) => {
+  const viewer = tokenUser(req)
+  if (!viewer) {
+    res.status(401).json({ error: errorCopy })
+    return
+  }
+  const existing = moments.find((moment) => moment.id === req.params.id)
+  if (!existing) {
+    res.status(404).json({ error: errorCopy })
+    return
+  }
+  if (existing.sender !== viewer) {
+    res.status(403).json({ error: errorCopy })
+    return
+  }
+  try {
+    const deleted = await deletePersistedMoment(existing.id, viewer)
+    if (!deleted) {
+      res.status(404).json({ error: errorCopy })
+      return
+    }
+    moments = moments.filter((moment) => moment.id !== existing.id)
+    broadcastMomentDelete(existing)
+    res.status(204).end()
+  } catch (error) {
+    console.error('[moment] delete failed', error instanceof Error ? error.message : 'unknown')
+    res.status(503).json({ error: errorCopy })
+  }
+})
+
 const server = createServer(app)
 
 const allowedOrigins = [
@@ -1106,6 +1261,11 @@ function canReceive(client: WsClient, message: StoredMessage): boolean {
   return canAccessConversation(message.sender, message.recipient, client.user)
 }
 
+function canReceiveMoment(client: WsClient, moment: StoredMoment): boolean {
+  if (moment.chatId === globalThreadId) return true
+  return client.user === moment.sender || client.user === moment.chatId
+}
+
 function broadcastMessage(message: StoredMessage): void {
   const payload = { type: 'message', message }
   for (const client of clients) {
@@ -1118,6 +1278,20 @@ function broadcastDelete(message: StoredMessage): void {
   const payload = { type: 'delete', id: message.id }
   for (const client of clients) {
     if (canReceive(client, message)) sendIfOpen(client.socket, payload)
+  }
+}
+
+function broadcastMoment(moment: StoredMoment): void {
+  const payload = { type: 'moment', moment }
+  for (const client of clients) {
+    if (canReceiveMoment(client, moment)) sendIfOpen(client.socket, payload)
+  }
+}
+
+function broadcastMomentDelete(moment: StoredMoment): void {
+  const payload = { type: 'moment-delete', id: moment.id }
+  for (const client of clients) {
+    if (canReceiveMoment(client, moment)) sendIfOpen(client.socket, payload)
   }
 }
 

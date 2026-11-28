@@ -31,6 +31,19 @@ export type ChatMessage = {
   status?: 'sending' | 'sent' | 'failed'
 }
 
+export type MomentMediaKind = 'image' | 'video'
+
+export type HoneyMoment = {
+  id: string
+  threadId: string
+  sender: string
+  createdAt: string
+  description: string
+  mediaKind: MomentMediaKind
+  mediaDataUrl: string
+  heartedByMe: boolean
+}
+
 export type GifResult = {
   id: string
   title: string

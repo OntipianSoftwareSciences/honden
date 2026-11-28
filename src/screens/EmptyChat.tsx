@@ -15,6 +15,8 @@ type Props = {
   onOpenThread: (id: string) => void
   onNewThread: (name: string) => void
   onAddUser: () => void
+  onOpenMoments?: () => void
+  hasNewMoment?: boolean
   compact?: boolean
   headerUserButton?: ReactNode
 }
@@ -30,6 +32,8 @@ export default function EmptyChat({
   onOpenThread,
   onNewThread,
   onAddUser,
+  onOpenMoments,
+  hasNewMoment = false,
   compact = false,
   headerUserButton,
 }: Props) {
@@ -48,9 +52,21 @@ export default function EmptyChat({
     <main className={`screen-fade h-full w-full bg-warm-cream ${compact ? '' : 'min-h-screen'}`}>
       <div className={`flex h-full w-full flex-col border-0 bg-white ${compact ? '' : 'min-h-screen'}`}>
         <header className={`flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2 border-b border-border sm:gap-x-3 ${compact ? 'px-4 py-3' : 'px-4 py-3 sm:px-6 sm:py-4'}`}>
-          <span className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg sm:flex" aria-hidden="true">
-            🍯
-          </span>
+          {onOpenMoments ? (
+            <button
+              type="button"
+              onClick={onOpenMoments}
+              aria-label="Open Honey Moments"
+              className={`honey-activation shrink-0 text-2xl${hasNewMoment ? ' honey-activation--new' : ''}`}
+            >
+              🍯
+              {hasNewMoment && <span className="honey-activation__dot" aria-hidden="true" />}
+            </button>
+          ) : (
+            <span className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-soft-blush text-lg sm:flex" aria-hidden="true">
+              🍯
+            </span>
+          )}
           <h2 className="readable-text whitespace-nowrap font-bold text-warm-charcoal">HonDen</h2>
           <ConnectionPill status={connection} detail={connectionDetail} onRetry={onRetry} />
           {headerUserButton}

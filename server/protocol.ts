@@ -3,6 +3,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 export const MAX_MESSAGE_BYTES = 16 * 1024
+export const MAX_MOMENT_BYTES = 12 * 1024 * 1024
 
 export type Cursor = { time: string; id: string }
 
@@ -83,5 +84,13 @@ export function isValidMessageText(text: unknown): text is string {
     typeof text === 'string' &&
     text.trim().length > 0 &&
     Buffer.byteLength(text, 'utf8') <= MAX_MESSAGE_BYTES
+  )
+}
+
+export function isValidMomentText(text: unknown): text is string {
+  return (
+    typeof text === 'string' &&
+    text.trim().length > 0 &&
+    Buffer.byteLength(text, 'utf8') <= MAX_MOMENT_BYTES
   )
 }

@@ -9,7 +9,7 @@ import { Pool } from 'pg';
 import { WebSocket, WebSocketServer } from 'ws';
 import * as webPush from 'web-push';
 import { fcmConfigured, sendFcmCallMessage } from './fcm.js';
-import { canAccessConversation, createSecret, isAfterCursor, isOriginAllowed, isValidChatId, isValidMessageId, isValidMessageText, issueToken, verifyToken, } from './protocol.js';
+import { canAccessConversation, createSecret, isAfterCursor, isOriginAllowed, isValidChatId, isValidMessageId, isValidMessageText, isValidMomentText, issueToken, verifyToken, } from './protocol.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const legacyDataDir = join(here, 'data');
 const apkReleaseUrl = 'https://github.com/OntipianSoftwareSciences/honden/releases/download/apk-latest/honden.apk';
@@ -124,6 +124,7 @@ function parseJwk(value) {
     return null;
 }
 let messages = [];
+let moments = [];
 let users = [];
 let pool = null;
 let sessionSecret = '';
@@ -207,6 +208,15 @@ async function loadFromPostgres(activePool) {
             time: String(row.time),
         };
     });
+    const momentRows = await activePool.query(`SELECT id, chat_id, sender, text, time
+     FROM moments ORDER BY time ASC, id ASC`);
+    moments = momentRows.rows.map((row) => ({
+        id: String(row.id),
+        chatId: String(row.chat_id),
+        sender: String(row.sender),
+        text: String(row.text),
+        time: String(row.time),
+    }));
 }
 function queuePostgresWrite(write) {
     const next = writeQueue.then(write, write);
@@ -240,6 +250,15 @@ async function initStorage() {
       `);
         await activePool.query(`
         CREATE TABLE IF NOT EXISTS messages (
+          id text PRIMARY KEY,
+          chat_id text NOT NULL,
+          sender text NOT NULL,
+          text text NOT NULL,
+          time text NOT NULL
+        )
+      `);
+        await activePool.query(`
+        CREATE TABLE IF NOT EXISTS moments (
           id text PRIMARY KEY,
           chat_id text NOT NULL,
           sender text NOT NULL,
@@ -294,7 +313,7 @@ async function initStorage() {
         await migrateJsonToPostgres(activePool);
         pool = activePool;
         await loadFromPostgres(activePool);
-        console.log(`Loaded ${users.length} users, ${messages.length} messages from ${storageSource}`);
+        console.log(`Loaded ${users.length} users, ${messages.length} messages, ${moments.length} moments from ${storageSource}`);
     }
     catch (error) {
         void activePool.end().catch(() => undefined);
@@ -405,13 +424,17 @@ function newRecoveryCode() {
     return code;
 }
 const app = express();
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(204);
+        return;
+    }
     next();
 });
-app.use(express.json());
+app.use(express.json({ limit: '80mb' }));
 app.post('/api/accounts', async (req, res) => {
     const username = cleanUsername(req.body?.username);
     const password = req.body?.password;
@@ -913,6 +936,122 @@ app.delete('/api/messages/:id', async (req, res) => {
         res.status(503).json({ error: errorCopy });
     }
 });
+function isValidMomentPayload(value) {
+    if (!value || typeof value !== 'object')
+        return false;
+    const body = value;
+    return isValidChatId(body.chatId, globalThreadId) && isValidMomentText(body.text);
+}
+function insertMoment(moment) {
+    const activePool = pool;
+    if (!activePool)
+        throw new Error('Postgres storage is not available');
+    return queuePostgresWrite(async () => {
+        const result = await activePool.query(`INSERT INTO moments (id, chat_id, sender, text, time)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO NOTHING`, [moment.id, moment.chatId, moment.sender, moment.text, moment.time]);
+        return (result.rowCount ?? 0) > 0;
+    });
+}
+function deletePersistedMoment(id, sender) {
+    const activePool = pool;
+    if (!activePool)
+        throw new Error('Postgres storage is not available');
+    return queuePostgresWrite(async () => {
+        const result = await activePool.query('DELETE FROM moments WHERE id = $1 AND sender = $2', [id, sender]);
+        return (result.rowCount ?? 0) > 0;
+    });
+}
+app.get('/api/moments', (req, res) => {
+    const viewer = tokenUser(req);
+    if (!viewer) {
+        res.status(401).json({ error: errorCopy });
+        return;
+    }
+    const requestedChatId = req.query.chatId;
+    if (typeof requestedChatId !== 'string' || !isValidChatId(requestedChatId, globalThreadId)) {
+        res.status(400).json({ error: errorCopy });
+        return;
+    }
+    const visible = moments
+        .filter((moment) => moment.chatId === requestedChatId)
+        .filter((moment) => {
+        if (moment.chatId === globalThreadId)
+            return true;
+        return canAccessConversation(moment.sender, moment.chatId, viewer);
+    })
+        .sort((a, b) => b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
+    res.json(visible.slice(0, 100));
+});
+app.post('/api/moments', async (req, res) => {
+    const viewer = tokenUser(req);
+    if (!viewer) {
+        res.status(401).json({ error: errorCopy });
+        return;
+    }
+    const body = req.body;
+    if (!isValidMomentPayload(body)) {
+        res.status(400).json({ error: errorCopy });
+        return;
+    }
+    if (body.chatId !== globalThreadId && body.chatId !== viewer && !users.some((u) => u.username === body.chatId)) {
+        res.status(403).json({ error: errorCopy });
+        return;
+    }
+    const id = typeof body.id === 'string' && isValidMessageId(body.id) ? body.id : randomUUID();
+    const moment = {
+        id,
+        chatId: body.chatId,
+        sender: viewer,
+        text: body.text.trim(),
+        time: new Date().toISOString(),
+    };
+    try {
+        const inserted = await insertMoment(moment);
+        if (!inserted) {
+            const existing = moments.find((item) => item.id === id);
+            res.status(200).json(existing ?? moment);
+            return;
+        }
+        moments.push(moment);
+        broadcastMoment(moment);
+        res.status(201).json(moment);
+    }
+    catch (error) {
+        console.error('[moment] persistence failed', error instanceof Error ? error.message : 'unknown');
+        res.status(503).json({ error: errorCopy });
+    }
+});
+app.delete('/api/moments/:id', async (req, res) => {
+    const viewer = tokenUser(req);
+    if (!viewer) {
+        res.status(401).json({ error: errorCopy });
+        return;
+    }
+    const existing = moments.find((moment) => moment.id === req.params.id);
+    if (!existing) {
+        res.status(404).json({ error: errorCopy });
+        return;
+    }
+    if (existing.sender !== viewer) {
+        res.status(403).json({ error: errorCopy });
+        return;
+    }
+    try {
+        const deleted = await deletePersistedMoment(existing.id, viewer);
+        if (!deleted) {
+            res.status(404).json({ error: errorCopy });
+            return;
+        }
+        moments = moments.filter((moment) => moment.id !== existing.id);
+        broadcastMomentDelete(existing);
+        res.status(204).end();
+    }
+    catch (error) {
+        console.error('[moment] delete failed', error instanceof Error ? error.message : 'unknown');
+        res.status(503).json({ error: errorCopy });
+    }
+});
 const server = createServer(app);
 const allowedOrigins = [
     ...new Set([
@@ -942,6 +1081,11 @@ function canReceive(client, message) {
         return true;
     return canAccessConversation(message.sender, message.recipient, client.user);
 }
+function canReceiveMoment(client, moment) {
+    if (moment.chatId === globalThreadId)
+        return true;
+    return client.user === moment.sender || client.user === moment.chatId;
+}
 function broadcastMessage(message) {
     const payload = { type: 'message', message };
     for (const client of clients) {
@@ -954,6 +1098,20 @@ function broadcastDelete(message) {
     const payload = { type: 'delete', id: message.id };
     for (const client of clients) {
         if (canReceive(client, message))
+            sendIfOpen(client.socket, payload);
+    }
+}
+function broadcastMoment(moment) {
+    const payload = { type: 'moment', moment };
+    for (const client of clients) {
+        if (canReceiveMoment(client, moment))
+            sendIfOpen(client.socket, payload);
+    }
+}
+function broadcastMomentDelete(moment) {
+    const payload = { type: 'moment-delete', id: moment.id };
+    for (const client of clients) {
+        if (canReceiveMoment(client, moment))
             sendIfOpen(client.socket, payload);
     }
 }
