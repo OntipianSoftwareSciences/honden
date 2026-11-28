@@ -3,6 +3,7 @@ import type { BeforeInstallPromptEvent } from '../hooks/useInstallPrompt'
 import type { Settings, ThemeName, UpdateSetting } from '../hooks/useSettings'
 import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
+import { isTauriRuntime } from '../api/client'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
 import { pushSupported, setPushKind, type PushKind } from '../net/push'
@@ -189,30 +190,43 @@ export default function Settings({
             </p>
           </section>
 
-          <section className="rounded-2xl border border-border bg-warm-cream p-6">
-            <h2 className="mb-2 text-sm font-bold text-pink-ink">Install on Android</h2>
-            <p className="mb-4 text-base">
-              Install HonDen on your phone, so it's always there when you need it.
-            </p>
-            {!installHandled &&
-              (!installPrompt || showInstallHelp ? (
-                <p className="rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
-                  To install: open HonDen in Chrome on your phone, tap the three dots,
-                  then Add to Home Screen.
-                </p>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void installHonDen()}
-                  className="w-full rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
-                >
-                  Install HonDen
-                </button>
-              ))}
-            <p className={`mt-3 ${noteText}`}>
-              Installs from Chrome, no download needed.
-            </p>
-          </section>
+          {!isTauriRuntime() && (
+            <section className="rounded-2xl border border-border bg-warm-cream p-6">
+              <h2 className="mb-2 text-sm font-bold text-pink-ink">Get the Android app</h2>
+              <p className="mb-4 text-base">
+                Install HonDen on your phone, so it's always there when you need it.
+              </p>
+              <a
+                href="https://honden.onrender.com/download"
+                target="_blank"
+                rel="noreferrer noopener"
+                className="flex min-h-11 w-full items-center justify-center rounded-xl bg-heart-pink px-6 py-3 text-base font-bold text-white transition hover:bg-deep-rose focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+              >
+                <span className="flex flex-col items-center leading-tight">
+                  <span>Download HonDen</span>
+                  <span className="text-[13px] font-semibold text-white/90">Get the Android app</span>
+                </span>
+              </a>
+              {!installHandled &&
+                (!installPrompt || showInstallHelp ? (
+                  <p className="mt-3 rounded-xl bg-soft-blush px-4 py-3 text-sm text-warm-charcoal">
+                    To install: open HonDen in Chrome on your phone, tap the three dots,
+                    then Add to Home Screen.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void installHonDen()}
+                    className="mt-3 min-h-11 w-full rounded-xl border border-heart-pink px-6 py-3 text-base font-bold text-pink-ink transition hover:bg-soft-blush focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-heart-pink"
+                  >
+                    Install HonDen
+                  </button>
+                ))}
+              <p className={`mt-3 ${noteText}`}>
+                Installs from Chrome, no download needed.
+              </p>
+            </section>
+          )}
 
           <section className="rounded-2xl border border-border bg-warm-cream p-6">
             <h2 className="mb-2 text-sm font-bold text-deep-rose">Privacy</h2>
