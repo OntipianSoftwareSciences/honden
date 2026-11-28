@@ -34,9 +34,13 @@ import { currentInvite, inviteUrl, relayUrl, rotateInvite } from './net/invite'
 import type { Invite } from './net/invite'
 import { logToAndroid } from './net/androidLog'
 import {
+  AUDIO_BAD_TYPE_MESSAGE,
+  AUDIO_TOO_BIG_MESSAGE,
+  MAX_AUDIO_BYTES,
   OWN_KO_FI_URL,
   decodeMomentPayload,
   encodeMomentPayload,
+  isArtistAudioFile,
   normalizeKoFiUrl,
 } from './net/artistShare'
 import { momentDetail, momentDetailsFrom } from './net/momentPicker'
@@ -104,6 +108,7 @@ import { registerFcmToken } from './net/fcm'
 import { playNewMessage } from './sounds'
 import type {
   AccountUser,
+  ArtistAudio,
   ChatMessage,
   ConnectionDetail,
   ConnectionStatus,
@@ -834,6 +839,12 @@ export default function App() {
     }
   }, [])
 
+  // A voice/video call takes over the speaker: stop Artist Honey playback.
+  useEffect(() => {
+    if (call.state === 'idle' || call.state === 'ended') return
+    document.querySelectorAll('audio').forEach((node) => node.pause())
+  }, [call.state])
+
   useEffect(() => {
     pushFlagsRef.current = {
       call: settings.callNotifications,
@@ -1364,7 +1375,13 @@ export default function App() {
       binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
     }
     const base64 = btoa(binary)
-    const type = file.type || (file.name.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'application/octet-stream')
+    const lowerName = file.name.toLowerCase()
+    const type = file.type || (
+      lowerName.endsWith('.mp3') ? 'audio/mpeg'
+      : lowerName.endsWith('.wav') ? 'audio/wav'
+      : lowerName.endsWith('.mp4') ? 'video/mp4'
+      : 'application/octet-stream'
+    )
     return `data:${type};base64,${base64}`
   }
 
@@ -1373,14 +1390,45 @@ export default function App() {
     file?: File
     scheme?: string
     artist?: { artistName: string; title: string; songUrl?: string; presetName?: string }
+    audio?: { file: File; scheme?: string }
   }): Promise<string | null> {
     const threadId = activeThreadId || globalThreadId
     const description = input.description.trim().slice(0, 200)
     let payload: string | null
 
     if (input.artist) {
-      payload = encodeMomentPayload({ description, artist: input.artist })
-      if (!payload) return 'Add an artist name, a title, and a song link or preset name.'
+      const artist: {
+        artistName: string
+        title: string
+        songUrl?: string
+        presetName?: string
+        audio?: ArtistAudio
+      } = { ...input.artist }
+      if (input.audio) {
+        const audioFile = input.audio.file
+        const invalid = !isArtistAudioFile(audioFile)
+          ? AUDIO_BAD_TYPE_MESSAGE
+          : audioFile.size <= 0
+            ? 'Could not read that audio file. Try a different one.'
+            : audioFile.size > MAX_AUDIO_BYTES
+              ? AUDIO_TOO_BIG_MESSAGE
+              : null
+        if (invalid) return invalid
+        const info = momentDetailsFrom(audioFile, input.audio.scheme)
+        try {
+          artist.audio = {
+            name: audioFile.name,
+            size: audioFile.size,
+            dataUrl: await readFileAsDataUrl(audioFile),
+          }
+        } catch (error) {
+          const reason = momentDetail(info, error)
+          logToAndroid(`HonDen artist audio read failed: ${reason}`)
+          return `Could not read that audio file (${reason}). Try a different one.`
+        }
+      }
+      payload = encodeMomentPayload({ description, artist })
+      if (!payload) return 'Add an artist name, a title, and one song link, preset name, or audio file.'
     } else {
       const file = input.file
       if (!file) return 'Add one image or one video to post a moment.'

@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { clampSeekTime, formatAudioTime, toggleAudio } from '../net/audioPlayer'
 import { logToAndroid } from '../net/androidLog'
-import { normalizeArtistShare, normalizeKoFiUrl } from '../net/artistShare'
+import {
+  AUDIO_BAD_TYPE_MESSAGE,
+  AUDIO_TOO_BIG_MESSAGE,
+  MAX_AUDIO_BYTES,
+  normalizeKoFiUrl,
+  normalizeSongUrl,
+  validateArtistAudio,
+} from '../net/artistShare'
 import { isAndroidRuntime, momentDetail, momentDetailsFrom, pickMomentFile } from '../net/momentPicker'
-import type { ArtistShare, HoneyMoment } from '../types'
+import type { ArtistAudio, ArtistShare, HoneyMoment } from '../types'
 
 type Props = {
   threadName: string
@@ -14,6 +22,7 @@ type Props = {
     file?: File
     scheme?: string
     artist?: ArtistShare
+    audio?: { file: File; scheme?: string }
   }) => Promise<string | null>
   onDelete: (id: string) => Promise<void>
   onHeart: (id: string) => void
@@ -46,6 +55,76 @@ async function videoDuration(file: File): Promise<number> {
   }
 }
 
+export function formatAudioSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
+
+function ArtistAudioPlayer({ audio }: { audio: ArtistAudio }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [current, setCurrent] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [failed, setFailed] = useState(false)
+
+  function seek(value: number) {
+    const node = audioRef.current
+    if (!node) return
+    const next = clampSeekTime(value, duration)
+    node.currentTime = next
+    setCurrent(next)
+  }
+
+  async function toggle() {
+    const node = audioRef.current
+    if (!node) return
+    setPlaying(await toggleAudio(node))
+  }
+
+  return (
+    <div className="mt-2 rounded-xl border border-border bg-white p-3">
+      <audio
+        ref={audioRef}
+        src={audio.dataUrl}
+        preload="metadata"
+        onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+        onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onError={() => setFailed(true)}
+      />
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          aria-label={playing ? 'Pause' : 'Play'}
+          onClick={() => void toggle()}
+          className="min-h-11 min-w-11 shrink-0 rounded-xl bg-heart-pink px-4 text-sm font-bold text-white transition hover:bg-deep-rose"
+        >
+          {playing ? 'Pause' : 'Play'}
+        </button>
+        <input
+          type="range"
+          aria-label="Seek audio"
+          min={0}
+          max={duration || 0}
+          step={0.1}
+          value={clampSeekTime(current, duration)}
+          onChange={(event) => seek(Number(event.target.value))}
+          className="min-h-11 min-w-0 flex-1 accent-heart-pink"
+        />
+      </div>
+      <div className="mt-1 flex justify-between text-[12px] text-soft-grey">
+        <span>{formatAudioTime(current)}</span>
+        <span>{formatAudioTime(duration)}</span>
+      </div>
+      {failed && <p className="mt-1 text-xs text-deep-rose">Could not play this audio.</p>}
+      <p className="mt-1 truncate text-[11px] text-soft-grey">{audio.name} · {formatAudioSize(audio.size)}</p>
+    </div>
+  )
+}
+
 export default function HoneyMoments({
   threadName,
   moments,
@@ -65,10 +144,13 @@ export default function HoneyMoments({
   const [mode, setMode] = useState<'media' | 'artist'>('media')
   const [artistName, setArtistName] = useState('')
   const [title, setTitle] = useState('')
-  const [shareKind, setShareKind] = useState<'song' | 'preset'>('song')
+  const [shareKind, setShareKind] = useState<'song' | 'preset' | 'audio'>('song')
   const [songUrl, setSongUrl] = useState('')
   const [presetName, setPresetName] = useState('')
+  const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [audioScheme, setAudioScheme] = useState('unknown')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const audioInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (!file) {
@@ -150,6 +232,48 @@ export default function HoneyMoments({
     }
   }
 
+  async function pickAudioFile(next: File | null, sourceScheme = 'unknown') {
+    setError('')
+    if (!next) {
+      setAudioFile(null)
+      setAudioScheme('unknown')
+      return
+    }
+    const invalid = validateArtistAudio(next)
+    if (invalid) {
+      setError(invalid)
+      return
+    }
+    setAudioFile(next)
+    setAudioScheme(sourceScheme)
+    setSongUrl('')
+    setPresetName('')
+  }
+
+  async function chooseAudio() {
+    setError('')
+    if (!isAndroidRuntime()) {
+      audioInputRef.current?.click()
+      return
+    }
+    try {
+      // Same native ContentResolver picker that fixed gallery reads, now in audio mode.
+      const picked = await pickMomentFile('audio')
+      if (!picked) return
+      await pickAudioFile(picked.file, picked.scheme)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      const sizeMatch = detail.match(/size=(\d+)/)
+      if (/larger than 50 MB/i.test(detail) || (sizeMatch && Number(sizeMatch[1]) > MAX_AUDIO_BYTES)) {
+        setError(AUDIO_TOO_BIG_MESSAGE)
+      } else if (/unsupported file type|choose an \.mp3 or \.wav/i.test(detail)) {
+        setError(AUDIO_BAD_TYPE_MESSAGE)
+      } else {
+        setError(`Could not read that file (${detail}). Try a different one.`)
+      }
+    }
+  }
+
   async function submit() {
     const text = description.trim()
     if (text.length > MAX_DESC) {
@@ -160,18 +284,26 @@ export default function HoneyMoments({
     setError('')
 
     if (mode === 'artist') {
-      const artist = normalizeArtistShare({
-        artistName,
-        title,
-        songUrl: shareKind === 'song' ? songUrl : '',
-        presetName: shareKind === 'preset' ? presetName : '',
-      })
-      if (!artist) {
+      const song = shareKind === 'song' ? normalizeSongUrl(songUrl) : null
+      const preset = shareKind === 'preset' ? presetName.trim() : ''
+      const hasAudio = Boolean(audioFile)
+      const choices = (song ? 1 : 0) + (preset ? 1 : 0) + (hasAudio ? 1 : 0)
+      if (!artistName.trim() || !title.trim() || choices !== 1) {
         setBusy(false)
-        setError('Add an artist name, a title, and a song link or preset name.')
+        setError('Add an artist name, a title, and one song link, preset name, or audio file.')
         return
       }
-      const postError = await onCreate({ description: text, artist })
+      const artist: ArtistShare = {
+        artistName: artistName.trim(),
+        title: title.trim(),
+        ...(song ? { songUrl: song } : {}),
+        ...(preset ? { presetName: preset } : {}),
+      }
+      const postError = await onCreate({
+        description: text,
+        artist,
+        audio: audioFile ? { file: audioFile, scheme: audioScheme } : undefined,
+      })
       setBusy(false)
       if (postError) {
         setError(postError)
@@ -182,6 +314,8 @@ export default function HoneyMoments({
       setTitle('')
       setSongUrl('')
       setPresetName('')
+      setAudioFile(null)
+      setAudioScheme('unknown')
       setShareKind('song')
       setCreating(false)
       return
@@ -309,7 +443,7 @@ export default function HoneyMoments({
                   />
                 </label>
                 <div>
-                  <span className="mb-2 block text-sm font-semibold text-warm-charcoal">Share a song or a preset</span>
+                  <span className="mb-2 block text-sm font-semibold text-warm-charcoal">Share a song, a preset, or audio</span>
                   <div className="flex flex-wrap gap-2" role="group" aria-label="Artist share type">
                     <button
                       type="button"
@@ -325,31 +459,71 @@ export default function HoneyMoments({
                     >
                       Preset name
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setShareKind('audio')}
+                      className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${shareKind === 'audio' ? 'bg-warm-amber text-warm-charcoal' : 'border border-border text-warm-charcoal hover:bg-soft-blush'}`}
+                    >
+                      Upload audio
+                    </button>
                   </div>
                 </div>
+                <input
+                  ref={audioInputRef}
+                  type="file"
+                  accept=".mp3,.wav,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/wave"
+                  className="hidden"
+                  onChange={(e) => void pickAudioFile(e.target.files?.[0] ?? null, 'web')}
+                />
                 {shareKind === 'song' ? (
                   <label className="block">
                     <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Song link</span>
                     <input
                       type="url"
                       value={songUrl}
-                      onChange={(e) => setSongUrl(e.target.value)}
+                      onChange={(e) => { setSongUrl(e.target.value); if (e.target.value) setAudioFile(null) }}
                       maxLength={500}
                       placeholder="https://..."
                       className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
                     />
                   </label>
-                ) : (
+                ) : shareKind === 'preset' ? (
                   <label className="block">
                     <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Preset name</span>
                     <input
                       value={presetName}
-                      onChange={(e) => setPresetName(e.target.value)}
+                      onChange={(e) => { setPresetName(e.target.value); if (e.target.value) setAudioFile(null) }}
                       maxLength={120}
                       placeholder="e.g. Honey Drums"
                       className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
                     />
                   </label>
+                ) : (
+                  <div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void chooseAudio()}
+                        className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-warm-charcoal hover:bg-soft-blush"
+                      >
+                        Upload audio
+                      </button>
+                      {audioFile && (
+                        <button
+                          type="button"
+                          onClick={() => { setAudioFile(null); setAudioScheme('unknown'); if (audioInputRef.current) audioInputRef.current.value = '' }}
+                          className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-soft-grey hover:bg-soft-blush"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    {audioFile ? (
+                      <p className="mt-2 truncate text-sm text-warm-charcoal">{audioFile.name} · {formatAudioSize(audioFile.size)}</p>
+                    ) : (
+                      <p className="mt-2 text-[12px] text-soft-grey">Only .mp3 or .wav, up to 50 MB.</p>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -408,7 +582,10 @@ export default function HoneyMoments({
                   <div className="mt-1 rounded-2xl border border-border bg-warm-cream p-3">
                     <p className="text-[11px] font-bold uppercase tracking-wide text-soft-grey">Artist share</p>
                     <p className="mt-1 text-sm font-bold text-pink-ink">{moment.artist.artistName}</p>
-                    <p className="text-sm text-warm-charcoal">{moment.artist.title}</p>
+                    <p className="mt-1 flex items-center gap-2 text-sm font-bold text-warm-charcoal">
+                      <span aria-hidden="true" style={{ fontSize: 24, lineHeight: 1 }}>🎵</span>
+                      <span className="min-w-0 truncate">{moment.artist.title}</span>
+                    </p>
                     {moment.artist.songUrl ? (
                       <a
                         href={moment.artist.songUrl}
@@ -418,6 +595,8 @@ export default function HoneyMoments({
                       >
                         {moment.artist.songUrl}
                       </a>
+                    ) : moment.artist.audio ? (
+                      <ArtistAudioPlayer audio={moment.artist.audio} />
                     ) : (
                       <p className="mt-2 text-sm text-warm-charcoal">Preset: {moment.artist.presetName}</p>
                     )}

@@ -3,7 +3,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 export const MAX_MESSAGE_BYTES = 16 * 1024
-export const MAX_MOMENT_BYTES = 12 * 1024 * 1024
+// A 50 MB encrypted audio moment is ~93 MB after data URL + AES-GCM base64.
+export const MAX_MOMENT_BYTES = 110 * 1024 * 1024
 
 export type Cursor = { time: string; id: string }
 

@@ -459,7 +459,7 @@ app.use((req, res, next) => {
     }
     next();
 });
-app.use(express.json({ limit: '80mb' }));
+app.use(express.json({ limit: '120mb' }));
 app.post('/api/accounts', async (req, res) => {
     const username = cleanUsername(req.body?.username);
     const password = req.body?.password;

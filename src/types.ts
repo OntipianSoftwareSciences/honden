@@ -33,11 +33,18 @@ export type ChatMessage = {
 
 export type MomentMediaKind = 'image' | 'video'
 
+export type ArtistAudio = {
+  name: string
+  size: number
+  dataUrl: string
+}
+
 export type ArtistShare = {
   artistName: string
   title: string
   songUrl?: string
   presetName?: string
+  audio?: ArtistAudio
 }
 
 export type HoneyMoment = {

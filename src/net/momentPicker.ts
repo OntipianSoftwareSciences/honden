@@ -27,6 +27,8 @@ export type PickedMomentFile = {
   size: number
 }
 
+export type MomentPickerKind = 'media' | 'audio'
+
 /** Tauri Android WebViews expose Android in the UA; desktop Tauri does not. */
 export function isAndroidRuntime(): boolean {
   if (!isTauriRuntime() || typeof navigator === 'undefined') return false
@@ -63,10 +65,10 @@ export function momentDetailsFrom(file: File, scheme?: string | null): MomentDet
  * ContentResolver instead of being handed to WebView as a fragile JS File.
  * Web/desktop callers keep the ordinary HTML file input.
  */
-export async function pickMomentFile(): Promise<PickedMomentFile | null> {
+export async function pickMomentFile(kind: MomentPickerKind = 'media'): Promise<PickedMomentFile | null> {
   if (!isAndroidRuntime()) throw new MomentPickerError('Native picker is only available in the Android app')
 
-  const result = await invoke<MomentPickerResult>('plugin:honden-fcm|pick_moment_media')
+  const result = await invoke<MomentPickerResult>('plugin:honden-fcm|pick_moment_media', { kind })
   if (result.cancelled) return null
 
   const info: MomentDetails = {
@@ -121,5 +123,6 @@ function decodeBase64(base64: string): Uint8Array {
 function defaultName(type: string): string {
   if (type.startsWith('image/')) return `moment.${type.slice('image/'.length)}`
   if (type.startsWith('video/')) return `moment.${type.slice('video/'.length)}`
+  if (type.startsWith('audio/')) return type.includes('wav') ? 'moment.wav' : 'moment.mp3'
   return 'moment'
 }

@@ -11,6 +11,7 @@ import android.webkit.MimeTypeMap
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -18,6 +19,11 @@ import app.tauri.plugin.Plugin
 import com.google.firebase.messaging.FirebaseMessaging
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+
+@InvokeArg
+internal class PickMomentArgs {
+    var kind: String? = null
+}
 
 @TauriPlugin
 class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
@@ -61,9 +67,18 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
         }
         pendingMomentInvoke = invoke
         try {
+            val audioOnly = try {
+                invoke.parseArgs(PickMomentArgs::class.java).kind == "audio"
+            } catch (_: Exception) {
+                false
+            }
             val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                type = "*/*"
-                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                type = if (audioOnly) "audio/*" else "*/*"
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    if (audioOnly) arrayOf("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave")
+                    else arrayOf("image/*", "video/*"),
+                )
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
                 addCategory(Intent.CATEGORY_OPENABLE)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -78,6 +93,11 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
     @ActivityCallback
     fun onMomentPicked(invoke: Invoke, result: ActivityResult) {
         pendingMomentInvoke = null
+        val audioOnly = try {
+            invoke.parseArgs(PickMomentArgs::class.java).kind == "audio"
+        } catch (_: Exception) {
+            false
+        }
         val uri = if (result.resultCode == Activity.RESULT_OK) result.data?.data else null
         if (uri == null) {
             val cancelled = JSObject()
@@ -103,8 +123,11 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
             name = metadata.first.orEmpty()
             size = metadata.second ?: 0L
             type = mimeType(uri, name)
-            if (!isAllowed(type)) {
-                throw IOException("unsupported file type; choose an image or a video")
+            if (!isAllowed(type, name, audioOnly)) {
+                throw IOException(
+                    if (audioOnly) "unsupported file type; choose an .mp3 or .wav"
+                    else "unsupported file type; choose an image or a video",
+                )
             }
             if (size > MAX_MOMENT_BYTES) {
                 throw IOException("file is larger than 50 MB")
@@ -120,7 +143,7 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
             picked.put("type", type)
             picked.put("size", size.toInt())
             picked.put("scheme", scheme)
-            picked.put("name", if (name.isBlank()) defaultName(type) else name)
+            picked.put("name", if (name.isBlank()) defaultName(type, audioOnly) else name)
             picked.put("dataUrl", "data:$type;base64,$encoded")
             picked.put("errorName", "")
             picked.put("errorMessage", "")
@@ -205,7 +228,13 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun isAllowed(type: String): Boolean = type.startsWith("image/") || type.startsWith("video/")
+    private fun isAllowed(type: String, name: String, audioOnly: Boolean): Boolean {
+        if (!audioOnly) return type.startsWith("image/") || type.startsWith("video/")
+        val extension = name.substringAfterLast('.', "").lowercase()
+        if (extension != "mp3" && extension != "wav") return false
+        val normalized = type.lowercase()
+        return normalized.isEmpty() || normalized.startsWith("audio/") || normalized == "application/octet-stream"
+    }
 
     private fun uriScheme(uri: Uri): String = when (uri.scheme) {
         null -> "unknown"
@@ -214,7 +243,8 @@ class HondenFcmPlugin(private val activity: Activity) : Plugin(activity) {
         else -> "${uri.scheme}://"
     }
 
-    private fun defaultName(type: String): String = when {
+    private fun defaultName(type: String, audioOnly: Boolean): String = when {
+        audioOnly -> if (type.contains("wav")) "moment.wav" else "moment.mp3"
         type.startsWith("image/") -> "moment.${type.removePrefix("image/")}"
         type.startsWith("video/") -> "moment.${type.removePrefix("video/")}"
         else -> "moment"

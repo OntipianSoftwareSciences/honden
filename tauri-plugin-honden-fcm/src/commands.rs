@@ -29,13 +29,20 @@ pub fn get_fcm_token<R: Runtime>(
 pub fn pick_moment_media<R: Runtime>(
     _app: AppHandle<R>,
     state: State<'_, HondenFcm<R>>,
+    kind: Option<String>,
 ) -> Result<Value> {
     #[cfg(mobile)]
     if let Some(handle) = &state.0 {
         return handle
-            .run_mobile_plugin("pickMomentMedia", ())
+            .run_mobile_plugin(
+                "pickMomentMedia",
+                json!({ "kind": kind.unwrap_or_else(|| "media".to_string()) }),
+            )
             .map_err(Into::into);
     }
+
+    #[cfg(not(mobile))]
+    let _ = kind;
 
     #[cfg(not(mobile))]
     let _ = state;
