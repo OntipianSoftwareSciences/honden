@@ -29,6 +29,8 @@ kotlin {
 dependencies {
     implementation(project(":tauri-android"))
     implementation("androidx.core:core-ktx:1.13.1")
+    // ActivityResult is passed to @ActivityCallback handlers by Tauri.
+    implementation("androidx.activity:activity-ktx:1.10.1")
 
     // Firebase Android BoM 35.2.0 pins the main messaging module (no KTX).
     implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
