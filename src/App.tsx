@@ -620,8 +620,11 @@ export default function App() {
       .catch((error: unknown) => {
         if (!active) return
         if (error instanceof KeyMismatchError) {
+          // Valid-login case: keep fresh token, log reason, let socket connect.
+          // Do not sign out or clear token; encryption may be unavailable until
+          // user re-authenticates with password.
           logToAndroid('HonDen identity mismatch during startup load: yes')
-          signOut(error.message, 'identity-load:key-mismatch')
+          setNotice(error.message)
           return
         }
         setNotice(genericKeyError)
