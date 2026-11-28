@@ -354,9 +354,18 @@ async function loadIdentity(username: string, password?: string): Promise<Loaded
       const identity = await identityFromPrivateJwk(saved.privateJwk)
       // The stored public half must belong to the stored private half; otherwise
       // DMs are encrypted with a key nobody else can reproduce.
-      if (!samePublicJwk(identity.publicJwk, saved.publicJwk)) throw new KeyMismatchError()
-      if (serverJwk && !samePublicJwk(saved.publicJwk, serverJwk)) throw new KeyMismatchError()
-      if (backupUnusable) throw new KeyMismatchError()
+      if (!samePublicJwk(identity.publicJwk, saved.publicJwk)) {
+        logToAndroid('HonDen identity mismatch: local pair present yes, matches no')
+        throw new KeyMismatchError()
+      }
+      if (serverJwk && !samePublicJwk(saved.publicJwk, serverJwk)) {
+        logToAndroid('HonDen identity mismatch: server key present yes, local matches server no')
+        throw new KeyMismatchError()
+      }
+      if (backupUnusable) {
+        logToAndroid('HonDen identity mismatch: backup usable no')
+        throw new KeyMismatchError()
+      }
       console.log('Key loaded', username)
       return { identity, fromBackup: false, fromPassword: false }
     } catch (error) {
