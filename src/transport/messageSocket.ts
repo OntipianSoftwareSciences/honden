@@ -113,7 +113,7 @@ export function startMessageSocket(
   function connectionDetail(): ConnectionDetail {
     const remaining = wakeStartedAt + connectTimeoutMs - Date.now()
     return {
-      attempt: retryCount,
+      attempt: attemptNumber(),
       maxAttempts: maxRetries,
       secondsLeft: Math.max(0, Math.ceil(remaining / 1000)),
     }
@@ -465,6 +465,11 @@ export function startMessageSocket(
     // existing retry count and 30s deadline so visibility changes cannot reset
     // the wake window indefinitely.
     if (authReady && socket?.readyState === WebSocket.OPEN) return
+    // Do not tear down an in-progress handshake: on Android, visibilitychange
+    // can fire while the 5s connect timer is still pending. Forcing a fresh
+    // socket here resets that timer and pins retry at 1/6 forever. Let the
+    // connect timer own stalled CONNECTING sockets; it will close and advance.
+    if (socket?.readyState === WebSocket.CONNECTING) return
     forceFreshSocket()
   }
 

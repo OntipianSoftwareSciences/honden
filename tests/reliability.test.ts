@@ -357,7 +357,7 @@ test('pill retries and goes Connected after the server wakes', async () => {
   restoreBrowserEnv()
 })
 
-test('visibilitychange resume retries a stuck socket and reaches Connected', async () => {
+test('visibilitychange during CONNECTING does not reset the handshake timer', async () => {
   installBrowserEnv('tauri.localhost', 'http://tauri.localhost')
   const statuses: string[] = []
   const controller = startMessageSocket(
@@ -367,20 +367,17 @@ test('visibilitychange resume retries a stuck socket and reaches Connected', asy
       onFrame: () => undefined,
       onSync: async () => undefined,
     },
-    { connectTimeoutMs: 1000 },
+    { connectTimeoutMs: 200, retryIntervalMs: 20, maxRetries: 6 },
   )
   assert.equal(statuses[0], 'connecting')
   assert.equal(createdSockets.length, 1)
-  // The APK was backgrounded with the handshake still in CONNECTING.
+  // Android can fire visibilitychange while the handshake is still pending.
+  // Tearing down the socket here resets the 5s timer and pins retry at 1/6.
   fireVisibilityChange()
-  assert.equal(createdSockets.length, 2, 'resume should open a fresh socket')
-  const resumed = createdSockets[1]
-  assert.ok(resumed)
-  resumed.open()
-  resumed.sendReady()
-  await delay(20)
-  assert.equal(statuses.at(-1), 'live')
-  assert.equal(connectionLabels.live, 'Connected 🍯')
+  assert.equal(createdSockets.length, 1, 'resume must not replace an in-progress handshake')
+  await delay(35)
+  assert.ok(createdSockets.length >= 2, 'connect timer must still advance retries')
+  assert.ok(statuses.includes('reconnecting'), `expected retry, got ${statuses.join(',')}`)
   controller.close()
   restoreBrowserEnv()
 })
