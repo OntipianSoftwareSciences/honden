@@ -67,6 +67,28 @@ function cleanUsername(value) {
     const name = value.trim().replace(/^@/, '').trim().toLowerCase();
     return /^[a-z0-9_]{2,24}$/.test(name) ? name : null;
 }
+/** Only plain https://ko-fi.com/<name> links are accepted, with no query or fragment. */
+function normalizeKoFiUrl(value) {
+    if (typeof value !== 'string')
+        return null;
+    const raw = value.trim();
+    if (!raw)
+        return null;
+    try {
+        const url = new URL(raw);
+        if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'ko-fi.com')
+            return null;
+        if (url.port || url.username || url.password || url.search || url.hash)
+            return null;
+        const path = url.pathname.replace(/\/+$/, '');
+        if (!/^\/[A-Za-z0-9_-]{1,40}$/.test(path))
+            return null;
+        return `https://ko-fi.com${path}`;
+    }
+    catch {
+        return null;
+    }
+}
 function readJsonArray(file, guard) {
     if (!existsSync(file))
         return [];
@@ -186,6 +208,7 @@ async function loadFromPostgres(activePool) {
         salt: String(row.salt),
         passwordHash: String(row.password_hash),
         publicJwk: parseJwk(row.public_jwk),
+        koFiUrl: row.ko_fi_url == null ? null : String(row.ko_fi_url),
         privateKeyBackup: parseJwk(row.private_key_backup) ?? undefined,
         recoverySalt: row.recovery_salt == null ? undefined : String(row.recovery_salt),
         recoveryHash: row.recovery_hash == null ? undefined : String(row.recovery_hash),
@@ -291,6 +314,7 @@ async function initStorage() {
         )
       `);
         await activePool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS private_key_backup jsonb');
+        await activePool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ko_fi_url text');
         await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_id text');
         await activePool.query('ALTER TABLE messages ADD COLUMN IF NOT EXISTS recipient_id text');
         await activePool.query(`UPDATE messages
@@ -378,12 +402,13 @@ function persistUsers() {
             await client.query('DELETE FROM users');
             for (const user of users) {
                 await client.query(`INSERT INTO users
-            (username, salt, password_hash, public_jwk, private_key_backup, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [
+            (username, salt, password_hash, public_jwk, ko_fi_url, private_key_backup, recovery_salt, recovery_hash, recovery_attempts, recovery_locked_until)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [
                     user.username,
                     user.salt,
                     user.passwordHash,
                     user.publicJwk ? JSON.stringify(user.publicJwk) : null,
+                    normalizeKoFiUrl(user.koFiUrl),
                     user.privateKeyBackup ? JSON.stringify(user.privateKeyBackup) : null,
                     user.recoverySalt ?? null,
                     user.recoveryHash ?? null,
@@ -426,7 +451,7 @@ function newRecoveryCode() {
 const app = express();
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') {
         res.sendStatus(204);
@@ -529,6 +554,30 @@ app.post('/api/reset', async (req, res) => {
         token: tokenFor(user.username),
     });
 });
+app.patch('/api/profile', async (req, res) => {
+    const viewer = tokenUser(req);
+    if (!viewer) {
+        res.status(401).json({ error: accountError });
+        return;
+    }
+    const user = users.find((item) => item.username === viewer);
+    if (!user) {
+        res.status(404).json({ error: accountError });
+        return;
+    }
+    const body = req.body;
+    if (body && Object.prototype.hasOwnProperty.call(body, 'koFiUrl')) {
+        const raw = typeof body.koFiUrl === 'string' ? body.koFiUrl.trim() : '';
+        const koFiUrl = raw ? normalizeKoFiUrl(raw) : null;
+        if (raw && !koFiUrl) {
+            res.status(400).json({ error: 'Use a Ko-fi link like https://ko-fi.com/yourname' });
+            return;
+        }
+        user.koFiUrl = koFiUrl;
+        await persistUsers();
+    }
+    res.json({ ok: true, koFiUrl: normalizeKoFiUrl(user.koFiUrl) });
+});
 app.get('/api/users/:username', (req, res) => {
     const received = String(req.params.username ?? '');
     console.log('[users lookup] received username:', JSON.stringify(received));
@@ -547,6 +596,7 @@ app.get('/api/users/:username', (req, res) => {
         username: user.username,
         publicKey: user.publicJwk ?? null,
         publicJwk: user.publicJwk ?? null,
+        koFiUrl: normalizeKoFiUrl(user.koFiUrl),
     });
 });
 app.get('/api/public-key', (req, res) => {

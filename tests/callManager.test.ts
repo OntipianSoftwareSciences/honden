@@ -402,7 +402,7 @@ test('connect diagnostic does not claim TURN failed before ICE starts', async ()
   assert.doesNotMatch(diagnostic, /TURN: not working/)
 })
 
-test('voice getUserMedia failure shows the exact DOMException', async () => {
+test('voice permission failure shows the friendly permission notice', async () => {
   getUserMediaImpl = async () => {
     throw new DOMException('Permission denied', 'NotAllowedError')
   }
@@ -411,10 +411,8 @@ test('voice getUserMedia failure shows the exact DOMException', async () => {
 
   const snapshot = manager.snapshot()
   assert.equal(snapshot.state, 'ended')
-  assert.match(snapshot.error, /getUserMedia/)
-  assert.match(snapshot.error, /NotAllowedError/)
-  assert.match(snapshot.error, /permission denied/)
-  assert.match(snapshot.error, /Permission denied/)
+  assert.match(snapshot.error, /Camera \/ microphone is off/)
+  assert.doesNotMatch(snapshot.error, /Permission denied/)
   assert.ok(warnings.includes('[call] getUserMedia failed: NotAllowedError'))
   assertNoMessageLogged('Permission denied')
 })
@@ -683,8 +681,8 @@ test('permission errors for both devices are not treated as missing devices', as
 
   assert.equal(calls, 2)
   const snapshot = manager.snapshot()
-  assert.match(snapshot.error, /NotAllowedError/)
-  assert.match(snapshot.error, /Permission denied/)
+  assert.match(snapshot.error, /Camera \/ microphone is off/)
+  assert.doesNotMatch(snapshot.error, /Permission denied/)
   assert.ok(warnings.includes('[call] getUserMedia failed: NotAllowedError'))
   assertNoMessageLogged('Permission denied')
 })

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import CuteLoader from './CuteLoader'
+import { normalizeKoFiUrl } from '../net/artistShare'
 import type {
   AccountUser,
   DeviceSession,
@@ -51,10 +52,18 @@ export function ProfileModal({ user, onClose, onSave }: ProfileModalProps) {
   const [bio, setBio] = useState(user.bio)
   const [status, setStatus] = useState<PresenceStatus>(user.status)
   const [avatarColor, setAvatarColor] = useState(user.avatarColor)
+  const [koFiUrl, setKoFiUrl] = useState(user.koFiUrl ?? '')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   const handleSave = async () => {
     if (!displayName.trim()) return
+    const normalizedKoFi = koFiUrl.trim() ? normalizeKoFiUrl(koFiUrl) : null
+    if (koFiUrl.trim() && !normalizedKoFi) {
+      setError('Use a Ko-fi link like https://ko-fi.com/yourname')
+      return
+    }
+    setError('')
     setSaving(true)
     try {
       await onSave({
@@ -62,6 +71,7 @@ export function ProfileModal({ user, onClose, onSave }: ProfileModalProps) {
         bio: bio.trim(),
         status,
         avatarColor,
+        koFiUrl: normalizedKoFi,
       })
       onClose()
     } finally {
@@ -128,6 +138,25 @@ export function ProfileModal({ user, onClose, onSave }: ProfileModalProps) {
               className="w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/40"
             />
           </label>
+
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Ko-fi link for tips
+            </span>
+            <input
+              type="url"
+              value={koFiUrl}
+              onChange={(event) => setKoFiUrl(event.target.value)}
+              maxLength={200}
+              placeholder="https://ko-fi.com/yourname"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/40"
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">
+              Leave blank if you don't want a Tip button. No in-app payments.
+            </span>
+          </label>
+
+          {error && <p className="text-xs text-rose-300">{error}</p>}
 
           <div>
             <span className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">

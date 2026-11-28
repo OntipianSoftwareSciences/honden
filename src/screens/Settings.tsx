@@ -5,6 +5,7 @@ import type { Settings, ThemeName, UpdateSetting } from '../hooks/useSettings'
 import type { LayoutInfo } from '../hooks/useLayoutInfo'
 import type { RelayState } from '../transport/channel'
 import { apiUrl, isTauriRuntime } from '../api/client'
+import { OWN_KO_FI_URL } from '../net/artistShare'
 import Toggle from '../components/Toggle'
 import HeartMark from '../components/HeartMark'
 import { pushSupported, setPushKind, type PushKind } from '../net/push'
@@ -26,7 +27,7 @@ type Props = {
 const noteText = 'text-[0.8125rem] text-soft-grey'
 
 // Scarlet's Ko-fi page for HonDen support.
-const SUPPORT_URL = 'https://ko-fi.com/L7O32B7IIH'
+const SUPPORT_URL = OWN_KO_FI_URL
 
 const themeOptions: ReadonlyArray<{ value: ThemeName; label: string }> = [
   { value: 'light', label: 'Light' },

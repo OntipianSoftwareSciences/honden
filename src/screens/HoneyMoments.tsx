@@ -1,14 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { logToAndroid } from '../net/androidLog'
+import { normalizeArtistShare, normalizeKoFiUrl } from '../net/artistShare'
 import { isAndroidRuntime, momentDetail, momentDetailsFrom, pickMomentFile } from '../net/momentPicker'
-import type { HoneyMoment } from '../types'
+import type { ArtistShare, HoneyMoment } from '../types'
 
 type Props = {
   threadName: string
   moments: HoneyMoment[]
   ownUsername: string
   onBack: () => void
-  onCreate: (input: { description: string; file: File; scheme?: string }) => Promise<string | null>
+  onCreate: (input: {
+    description: string
+    file?: File
+    scheme?: string
+    artist?: ArtistShare
+  }) => Promise<string | null>
   onDelete: (id: string) => Promise<void>
   onHeart: (id: string) => void
 }
@@ -56,6 +62,12 @@ export default function HoneyMoments({
   const [previewUrl, setPreviewUrl] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<'media' | 'artist'>('media')
+  const [artistName, setArtistName] = useState('')
+  const [title, setTitle] = useState('')
+  const [shareKind, setShareKind] = useState<'song' | 'preset'>('song')
+  const [songUrl, setSongUrl] = useState('')
+  const [presetName, setPresetName] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -140,20 +152,51 @@ export default function HoneyMoments({
 
   async function submit() {
     const text = description.trim()
-    if (!file && !text) {
-      setError('Add a photo, a video, or a description first.')
-      return
-    }
     if (text.length > MAX_DESC) {
       setError('Description can be up to 200 characters.')
       return
     }
+    setBusy(true)
+    setError('')
+
+    if (mode === 'artist') {
+      const artist = normalizeArtistShare({
+        artistName,
+        title,
+        songUrl: shareKind === 'song' ? songUrl : '',
+        presetName: shareKind === 'preset' ? presetName : '',
+      })
+      if (!artist) {
+        setBusy(false)
+        setError('Add an artist name, a title, and a song link or preset name.')
+        return
+      }
+      const postError = await onCreate({ description: text, artist })
+      setBusy(false)
+      if (postError) {
+        setError(postError)
+        return
+      }
+      setDescription('')
+      setArtistName('')
+      setTitle('')
+      setSongUrl('')
+      setPresetName('')
+      setShareKind('song')
+      setCreating(false)
+      return
+    }
+
+    if (!file && !text) {
+      setBusy(false)
+      setError('Add a photo, a video, or a description first.')
+      return
+    }
     if (!file) {
+      setBusy(false)
       setError('Add one image or one video to post a moment.')
       return
     }
-    setBusy(true)
-    setError('')
     const postError = await onCreate({ description: text, file, scheme })
     setBusy(false)
     if (postError) {
@@ -193,36 +236,122 @@ export default function HoneyMoments({
         {creating && (
           <div className="mb-4 rounded-3xl border border-border bg-white p-4 shadow-soft">
             <p className="mb-3 text-sm font-bold text-pink-ink">New Moment</p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,video/*"
-              className="hidden"
-              onChange={(e) => void pickFile(e.target.files?.[0] ?? null)}
-            />
-            <div className="flex flex-wrap gap-2">
+            <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Moment type">
               <button
                 type="button"
-                onClick={() => void chooseMedia()}
-                className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-warm-charcoal hover:bg-soft-blush"
+                onClick={() => { setMode('media'); setError('') }}
+                className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${mode === 'media' ? 'bg-heart-pink text-white' : 'border border-border text-warm-charcoal hover:bg-soft-blush'}`}
               >
-                {file ? 'Change photo/video' : 'Add photo/video'}
+                Photo/video
               </button>
-              {file && (
-                <button
-                  type="button"
-                  onClick={() => { setFile(null); setScheme('unknown'); if (fileInputRef.current) fileInputRef.current.value = '' }}
-                  className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-soft-grey hover:bg-soft-blush"
-                >
-                  Remove
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => { setMode('artist'); setError('') }}
+                className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${mode === 'artist' ? 'bg-heart-pink text-white' : 'border border-border text-warm-charcoal hover:bg-soft-blush'}`}
+              >
+                Artist share
+              </button>
             </div>
-            {previewUrl && file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(file.name)) && (
-              <img src={previewUrl} alt="Moment preview" className="mt-3 max-h-72 w-full rounded-2xl object-cover" />
-            )}
-            {previewUrl && file && (file.type.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(file.name)) && (
-              <video src={previewUrl} controls className="mt-3 max-h-72 w-full rounded-2xl bg-black" />
+            {mode === 'media' ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  className="hidden"
+                  onChange={(e) => void pickFile(e.target.files?.[0] ?? null)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void chooseMedia()}
+                    className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-warm-charcoal hover:bg-soft-blush"
+                  >
+                    {file ? 'Change photo/video' : 'Add photo/video'}
+                  </button>
+                  {file && (
+                    <button
+                      type="button"
+                      onClick={() => { setFile(null); setScheme('unknown'); if (fileInputRef.current) fileInputRef.current.value = '' }}
+                      className="min-h-11 rounded-xl border border-border px-4 text-sm font-bold text-soft-grey hover:bg-soft-blush"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                {previewUrl && file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(file.name)) && (
+                  <img src={previewUrl} alt="Moment preview" className="mt-3 max-h-72 w-full rounded-2xl object-cover" />
+                )}
+                {previewUrl && file && (file.type.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(file.name)) && (
+                  <video src={previewUrl} controls className="mt-3 max-h-72 w-full rounded-2xl bg-black" />
+                )}
+              </>
+            ) : (
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Artist name</span>
+                  <input
+                    value={artistName}
+                    onChange={(e) => setArtistName(e.target.value)}
+                    maxLength={80}
+                    placeholder="@artist or band"
+                    className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Title</span>
+                  <input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    maxLength={120}
+                    placeholder="Song or preset title"
+                    className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
+                  />
+                </label>
+                <div>
+                  <span className="mb-2 block text-sm font-semibold text-warm-charcoal">Share a song or a preset</span>
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Artist share type">
+                    <button
+                      type="button"
+                      onClick={() => setShareKind('song')}
+                      className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${shareKind === 'song' ? 'bg-warm-amber text-warm-charcoal' : 'border border-border text-warm-charcoal hover:bg-soft-blush'}`}
+                    >
+                      Song link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShareKind('preset')}
+                      className={`min-h-11 rounded-xl px-4 text-sm font-bold transition ${shareKind === 'preset' ? 'bg-warm-amber text-warm-charcoal' : 'border border-border text-warm-charcoal hover:bg-soft-blush'}`}
+                    >
+                      Preset name
+                    </button>
+                  </div>
+                </div>
+                {shareKind === 'song' ? (
+                  <label className="block">
+                    <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Song link</span>
+                    <input
+                      type="url"
+                      value={songUrl}
+                      onChange={(e) => setSongUrl(e.target.value)}
+                      maxLength={500}
+                      placeholder="https://..."
+                      className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
+                    />
+                  </label>
+                ) : (
+                  <label className="block">
+                    <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Preset name</span>
+                    <input
+                      value={presetName}
+                      onChange={(e) => setPresetName(e.target.value)}
+                      maxLength={120}
+                      placeholder="e.g. Honey Drums"
+                      className="w-full rounded-xl border border-border bg-warm-cream px-3 py-2 text-base text-warm-charcoal outline-none focus:border-heart-pink"
+                    />
+                  </label>
+                )}
+              </div>
             )}
             <label className="mt-3 block">
               <span className="mb-1 block text-sm font-semibold text-warm-charcoal">Description</span>
@@ -275,12 +404,41 @@ export default function HoneyMoments({
                     </button>
                   )}
                 </div>
-                {moment.mediaKind === 'image' ? (
+                {moment.artist ? (
+                  <div className="mt-1 rounded-2xl border border-border bg-warm-cream p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-soft-grey">Artist share</p>
+                    <p className="mt-1 text-sm font-bold text-pink-ink">{moment.artist.artistName}</p>
+                    <p className="text-sm text-warm-charcoal">{moment.artist.title}</p>
+                    {moment.artist.songUrl ? (
+                      <a
+                        href={moment.artist.songUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 block break-all text-sm text-deep-rose underline"
+                      >
+                        {moment.artist.songUrl}
+                      </a>
+                    ) : (
+                      <p className="mt-2 text-sm text-warm-charcoal">Preset: {moment.artist.presetName}</p>
+                    )}
+                  </div>
+                ) : moment.mediaKind === 'image' && moment.mediaDataUrl ? (
                   <img src={moment.mediaDataUrl} alt={moment.description || 'Honey moment'} className="max-h-[60vh] w-full rounded-2xl object-cover" />
-                ) : (
+                ) : moment.mediaKind === 'video' && moment.mediaDataUrl ? (
                   <video src={moment.mediaDataUrl} controls className="max-h-[60vh] w-full rounded-2xl bg-black" />
-                )}
+                ) : null}
                 {moment.description && <p className="mt-3 whitespace-pre-wrap text-sm text-warm-charcoal">{moment.description}</p>}
+                {moment.artist && normalizeKoFiUrl(moment.koFiUrl) && (
+                  <a
+                    href={normalizeKoFiUrl(moment.koFiUrl) ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Tip $1 to ${moment.artist.artistName} on Ko-fi`}
+                    className="mt-3 inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl bg-warm-amber px-4 text-sm font-bold text-warm-charcoal transition hover:bg-heart-pink hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warm-amber"
+                  >
+                    Tip $1
+                  </a>
+                )}
                 <button
                   type="button"
                   aria-label={moment.heartedByMe ? 'Remove heart' : 'Heart this moment'}

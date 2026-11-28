@@ -33,14 +33,24 @@ export type ChatMessage = {
 
 export type MomentMediaKind = 'image' | 'video'
 
+export type ArtistShare = {
+  artistName: string
+  title: string
+  songUrl?: string
+  presetName?: string
+}
+
 export type HoneyMoment = {
   id: string
   threadId: string
   sender: string
   createdAt: string
   description: string
-  mediaKind: MomentMediaKind
-  mediaDataUrl: string
+  mediaKind?: MomentMediaKind
+  mediaDataUrl?: string
+  artist?: ArtistShare
+  /** Public profile Ko-fi link, used only for the external Tip button. */
+  koFiUrl?: string | null
   heartedByMe: boolean
 }
 
@@ -62,6 +72,7 @@ export type AccountUser = {
   status: PresenceStatus
   avatarColor: string
   avatarUrl: string | null
+  koFiUrl: string | null
   createdAt: string
 }
 
@@ -70,6 +81,7 @@ export type ProfilePatch = {
   bio?: string
   status?: PresenceStatus
   avatarColor?: string
+  koFiUrl?: string | null
 }
 
 export type DeviceSession = {

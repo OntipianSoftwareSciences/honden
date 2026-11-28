@@ -33,6 +33,12 @@ import {
 import { currentInvite, inviteUrl, relayUrl, rotateInvite } from './net/invite'
 import type { Invite } from './net/invite'
 import { logToAndroid } from './net/androidLog'
+import {
+  OWN_KO_FI_URL,
+  decodeMomentPayload,
+  encodeMomentPayload,
+  normalizeKoFiUrl,
+} from './net/artistShare'
 import { momentDetail, momentDetailsFrom } from './net/momentPicker'
 import {
   connectRelay,
@@ -245,25 +251,19 @@ async function toHoneyMoment(message: WireMoment, identity: Identity | null): Pr
     activeIdentity = loaded?.identity ?? null
   }
   const text = await decryptWireText(message.text, activeIdentity, sender, message.chatId)
-  try {
-    const parsed = JSON.parse(text) as { v?: number; description?: unknown; mediaKind?: unknown; mediaDataUrl?: unknown }
-    if (parsed.v !== 1) return null
-    const mediaKind = parsed.mediaKind === 'image' || parsed.mediaKind === 'video' ? parsed.mediaKind : null
-    const mediaDataUrl = typeof parsed.mediaDataUrl === 'string' ? parsed.mediaDataUrl : ''
-    const description = typeof parsed.description === 'string' ? parsed.description.slice(0, 200) : ''
-    if (!mediaKind || !mediaDataUrl) return null
-    return {
-      id: message.id,
-      threadId: message.chatId,
-      sender,
-      createdAt: message.time,
-      description,
-      mediaKind,
-      mediaDataUrl,
-      heartedByMe: false,
-    }
-  } catch {
-    return null
+  const decoded = decodeMomentPayload(text)
+  if (!decoded) return null
+  return {
+    id: message.id,
+    threadId: message.chatId,
+    sender,
+    createdAt: message.time,
+    description: decoded.description,
+    mediaKind: decoded.mediaKind,
+    mediaDataUrl: decoded.mediaDataUrl,
+    artist: decoded.artist,
+    koFiUrl: sender === ownUsername ? OWN_KO_FI_URL : await fetchKoFiUrl(sender),
+    heartedByMe: false,
   }
 }
 
@@ -291,6 +291,26 @@ async function lookupAccount(username: string): Promise<string | null> {
     if (!response.ok) return null
     const data = (await response.json()) as { username?: unknown }
     return typeof data.username === 'string' ? normalizeUsername(data.username) || null : null
+  } catch {
+    return null
+  }
+}
+
+const koFiUrlByUser = new Map<string, string | null>()
+
+async function fetchKoFiUrl(username: string): Promise<string | null> {
+  if (!username) return null
+  if (koFiUrlByUser.has(username)) return koFiUrlByUser.get(username) ?? null
+  try {
+    const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(username)}`))
+    if (!response.ok) {
+      koFiUrlByUser.set(username, null)
+      return null
+    }
+    const data = (await response.json()) as { koFiUrl?: unknown }
+    const url = normalizeKoFiUrl(data.koFiUrl)
+    koFiUrlByUser.set(username, url)
+    return url
   } catch {
     return null
   }
@@ -456,6 +476,7 @@ const defaultUser: AccountUser = {
   status: 'online',
   avatarColor: '#FF6B9D',
   avatarUrl: null,
+  koFiUrl: null,
   createdAt: new Date(0).toISOString(),
 }
 
@@ -1347,38 +1368,53 @@ export default function App() {
     return `data:${type};base64,${base64}`
   }
 
-  async function createMoment(input: { description: string; file: File; scheme?: string }): Promise<string | null> {
+  async function createMoment(input: {
+    description: string
+    file?: File
+    scheme?: string
+    artist?: { artistName: string; title: string; songUrl?: string; presetName?: string }
+  }): Promise<string | null> {
     const threadId = activeThreadId || globalThreadId
     const description = input.description.trim().slice(0, 200)
-    const fileType = input.file.type || ''
-    const info = momentDetailsFrom(input.file, input.scheme)
-    const detail = (error?: unknown) => momentDetail(info, error)
-    const isImage = fileType.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(input.file.name)
-    const isVideo = fileType.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(input.file.name)
-    if (!isImage && !isVideo) return `Choose an image or a video. (${detail()})`
-    if (input.file.size <= 0) {
-      const reason = detail('ValidationError: size is 0')
-      logToAndroid(`HonDen moment read failed: ${reason}`)
-      return `Could not read that file (${reason}). Try a different one.`
-    }
-    if (isImage && input.file.size > 10 * 1024 * 1024) return 'That image is too big. Images can be up to 10 MB.'
-    if (isVideo && input.file.size > 50 * 1024 * 1024) return 'That video is too big. Videos can be up to 50 MB.'
+    let payload: string | null
 
-    let dataUrl = ''
-    try {
-      dataUrl = await readFileAsDataUrl(input.file)
-    } catch (error) {
-      const reason = detail(error)
-      logToAndroid(`HonDen moment read failed: ${reason}`)
-      return `Could not read that file (${reason}). Try a different one.`
+    if (input.artist) {
+      payload = encodeMomentPayload({ description, artist: input.artist })
+      if (!payload) return 'Add an artist name, a title, and a song link or preset name.'
+    } else {
+      const file = input.file
+      if (!file) return 'Add one image or one video to post a moment.'
+      const fileType = file.type || ''
+      const info = momentDetailsFrom(file, input.scheme)
+      const detail = (error?: unknown) => momentDetail(info, error)
+      const isImage = fileType.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/i.test(file.name)
+      const isVideo = fileType.startsWith('video/') || /\.(mp4|mov|webm|m4v|3gp)$/i.test(file.name)
+      if (!isImage && !isVideo) return `Choose an image or a video. (${detail()})`
+      if (file.size <= 0) {
+        const reason = detail('ValidationError: size is 0')
+        logToAndroid(`HonDen moment read failed: ${reason}`)
+        return `Could not read that file (${reason}). Try a different one.`
+      }
+      if (isImage && file.size > 10 * 1024 * 1024) return 'That image is too big. Images can be up to 10 MB.'
+      if (isVideo && file.size > 50 * 1024 * 1024) return 'That video is too big. Videos can be up to 50 MB.'
+
+      let dataUrl = ''
+      try {
+        dataUrl = await readFileAsDataUrl(file)
+      } catch (error) {
+        const reason = detail(error)
+        logToAndroid(`HonDen moment read failed: ${reason}`)
+        return `Could not read that file (${reason}). Try a different one.`
+      }
+      if (!dataUrl) {
+        const reason = detail('TypeError: empty data URL')
+        logToAndroid(`HonDen moment read failed: ${reason}`)
+        return `Could not read that file (${reason}). Try a different one.`
+      }
+      payload = encodeMomentPayload({ description, mediaKind: isImage ? 'image' : 'video', mediaDataUrl: dataUrl })
+      if (!payload) return 'Could not read that file. Try a different one.'
     }
 
-    if (!dataUrl) {
-      const reason = detail('TypeError: empty data URL')
-      logToAndroid(`HonDen moment read failed: ${reason}`)
-      return `Could not read that file (${reason}). Try a different one.`
-    }
-    const payload = JSON.stringify({ v: 1, description, mediaKind: isImage ? 'image' : 'video', mediaDataUrl: dataUrl })
     let text = payload
     if (threadId !== globalThreadId) {
       const current = identityRef.current ?? (await loadIdentity(ownUsername).catch(() => null))?.identity ?? null
@@ -1540,17 +1576,24 @@ export default function App() {
 
   async function saveProfile(patch: ProfilePatch) {
     setUser((current) => ({ ...current, ...patch }))
+    koFiUrlByUser.delete(ownUsername)
     const token = getSignalToken()
     if (!token) return
+    const body = JSON.stringify(patch)
     try {
-      await fetch(apiUrl(`/api/auth/profile`), {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(patch),
-      })
+      await Promise.allSettled([
+        fetch(apiUrl(`/api/auth/profile`), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body,
+        }),
+        // The live relay stores the public Ko-fi link for other artists' Tip buttons.
+        fetch(apiUrl(`/api/profile`), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body,
+        }),
+      ])
     } catch {
       return
     }
